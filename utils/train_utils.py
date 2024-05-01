@@ -89,7 +89,7 @@ def prepare_data_loaders(train_dataset, val_dataset, config):
     )
     return train_loader, val_loader
 
-def run_train_model(model, datasets, config):
+def run_train_model(model, datasets, config, project_name='transformer'):
     set_seed(42)
 
     mp = 'fp16' if config.mixed_precision else 'no'
@@ -99,7 +99,7 @@ def run_train_model(model, datasets, config):
                                 split_batches=True, 
                                 log_with ='wandb')
     accelerator.init_trackers(
-                project_name="brain_former", 
+                project_name=project_name, 
                 config=config)
 
     print('Device for training: ', accelerator.device)
@@ -134,8 +134,8 @@ def run_train_model(model, datasets, config):
             with accelerator.accumulate(model):
                 optimizer.zero_grad(set_to_none=True)
                 
-                inputs, labels = batch
-                loss, _ = model(inputs, labels)
+                inputs, labels, date_info = batch
+                loss, _ = model(inputs, labels, date_info=date_info)
                 accelerator.backward(loss)
                 
                 if accelerator.sync_gradients:
@@ -151,9 +151,9 @@ def run_train_model(model, datasets, config):
                 model.eval()
                 val_loss_list = []
                 for batch in val_loader:
-                    inputs, labels = batch
+                    inputs, labels, date_info = batch
                     with torch.no_grad():
-                        val_loss, _ = model(inputs, labels)
+                        val_loss, _ = model(inputs, labels, date_info)
                     val_loss_list.append(val_loss)
                 
                 ## printing 
