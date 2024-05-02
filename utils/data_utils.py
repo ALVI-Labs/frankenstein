@@ -199,11 +199,11 @@ class BrainDataset(Dataset):
             for text in self.targets:
                 tokens = tokenize_function(text)
                 tokens_padded = pad_token_list(tokens, MAX_TOKENS)
-                # tokens_padded = np.array(tokens_padded, type=np.int)
+                tokens_padded = np.asarray(tokens_padded, dtype=np.int64)
                 self.targets_tokens.append(tokens_padded)
         else:
             self.targets_tokens = self.targets[:]
-        
+        # self.targets_tokens = np.ndarray(self.targets_tokens, type=int)
         self.remove_bad_samples(bad_samples_idxs)
         
 
