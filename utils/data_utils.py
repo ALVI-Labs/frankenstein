@@ -7,8 +7,48 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
 
-def process_signal(brain_list, block_list):
-    return brain_list
+def process_signal(voltage_list, spikes_list, block_list):
+    """
+    Preprocess voltages / spike counts based on the
+    block-consistent features (z-score)
+    """
+    
+    n_trials = len(block_list)
+    trial_indices = np.arange(n_trials)
+    
+    """ Concatenate spikes and voltages """
+    # concatenate spike power and threshold crossings along the channels dimension
+    
+    brain_concat = np.empty(n_trials, dtype=object)
+    for i in range(n_trials):
+        brain_concat[i] = np.concatenate([voltage_list[i], spikes_list[i]], axis=1)
+    
+    """ Block-wise Z-score and smoothing """
+
+    brain_processed = np.empty(n_trials, dtype=object)
+    
+    for block in np.unique(block_list):
+        
+        trial_mask = block_list == block
+        
+        brain_appended = np.concatenate(brain_concat[trial_mask], axis=0)
+        
+        # get row vectors because channels are 2nd dimension (column-wise means and stds)
+        block_mean = brain_appended.mean(axis=0)[None, :] 
+        block_std  = brain_appended.std(axis=0)[None, :]
+        
+        block_std[block_std == 0] = 1
+        
+        # normalize each trial according to the block mean and std (zscore)
+        for trial in trial_indices[trial_mask]:
+            brain_processed[trial] = (brain_concat[trial] - block_mean) / block_std
+            
+            """ Gaussian smoothing over time (in the same loop for efficiency)"""
+            # here we don't really care if it's causal (does not look into the future)
+            # because we are decoding the whole sentence
+            brain_processed[trial] = scipy.ndimage.gaussian_filter1d(brain_processed[trial], sigma=1, axis=0)            
+            
+    return brain_processed
 
 def process_text(arr):
     return [str.strip() for str in arr]
@@ -22,10 +62,11 @@ def process_file(data_file):
 
     date_list = [date for _ in range(n_trials)]
 
-    brain_list = data['spikePow'][0][:]
-    block_list =  data['blockIdx'][:]
+    voltage_list = data['spikePow'][0][:]
+    spikes_list  = data['tx4'][0][:]
+    block_list   = data['blockIdx'][:, 0]
 
-    brain_list = process_signal(brain_list, block_list)
+    brain_list = process_signal(voltage_list, spikes_list, block_list)
     
     sentence_list = data['sentenceText']
     sentence_list = process_text(sentence_list)
@@ -46,7 +87,6 @@ def process_all_files(path):
         data_res['date_list'].extend(dates)
 
     return data_res
-
 
 
 class BrainDataset(Dataset):
