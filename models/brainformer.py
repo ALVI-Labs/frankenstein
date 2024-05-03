@@ -19,11 +19,13 @@ class MAEConfig(Serializable):
     # data params
     window_size: int = 1024
     n_electrodes: int = 256
-    patch_size: int = 32
+    # patch_size: int = 32
+    patch_size: int = 48
 
     # encoder
     dim: int = 256
-    n_layers: int = 8
+    # n_layers: int = 8
+    n_layers: int = 4
     head_dim: int = 32
     hidden_dim: int = 1024
     n_heads: int = 8
