@@ -1,5 +1,6 @@
 import numpy as np
 from pathlib import Path
+import scipy
 import scipy.io
 from sklearn.preprocessing import MinMaxScaler
 from collections import defaultdict
@@ -70,11 +71,49 @@ def block_specific_scaling(brain_list, idx_list):
     return scaled_brain_list
 
 
+  
+def process_signal(voltage_list, spikes_list, block_list):
+    """
+    Preprocess voltages / spike counts based on the
+    block-consistent features (z-score)
+    """
+    
+    n_trials = len(block_list)
+    trial_indices = np.arange(n_trials)
+    
+    """ Concatenate spikes and voltages """
+    # concatenate spike power and threshold crossings along the channels dimension
+    
+    brain_concat = np.empty(n_trials, dtype=object)
+    for i in range(n_trials):
+        brain_concat[i] = np.concatenate([voltage_list[i], spikes_list[i]], axis=1)
+    
+    """ Block-wise Z-score and smoothing """
 
-def process_signal(brain_list, block_list):
-
-    brain_list = block_specific_scaling(brain_list, block_list)
-    return brain_list
+    brain_processed = np.empty(n_trials, dtype=object)
+    
+    for block in np.unique(block_list):
+        
+        trial_mask = block_list == block
+        
+        brain_appended = np.concatenate(brain_concat[trial_mask], axis=0)
+        
+        # get row vectors because channels are 2nd dimension (column-wise means and stds)
+        block_mean = brain_appended.mean(axis=0)[None, :] 
+        block_std  = brain_appended.std(axis=0)[None, :]
+        
+        block_std[block_std == 0] = 1
+        
+        # normalize each trial according to the block mean and std (zscore)
+        for trial in trial_indices[trial_mask]:
+            brain_processed[trial] = (brain_concat[trial] - block_mean) / block_std
+            
+            """ Gaussian smoothing over time (in the same loop for efficiency)"""
+            # here we don't really care if it's causal (does not look into the future)
+            # because we are decoding the whole sentence
+            brain_processed[trial] = scipy.ndimage.gaussian_filter1d(brain_processed[trial], sigma=1, axis=0)            
+            
+    return brain_processed
 
 def process_text(arr):
     return [str.strip() for str in arr]
@@ -85,8 +124,15 @@ def process_file(data_file):
     date = data_file.stem
     n_trials = data['blockIdx'].shape[0]
 
-    brain_list = [data['spikePow'][0][i] for i in range(n_trials)]
-    block_list = [data['blockIdx'][i][0] for i in range(n_trials)]
+
+    date_list = [date for _ in range(n_trials)]
+
+    voltage_list = data['spikePow'][0][:]
+    spikes_list  = data['tx4'][0][:]
+    block_list   = data['blockIdx'][:, 0]
+
+    brain_list = process_signal(voltage_list, spikes_list, block_list)
+
     
     sentence_list = data['sentenceText']
 
@@ -167,7 +213,6 @@ def pad_token_list(token_list, max_tokens):
 
 def remove_padding(token_list):
     return [token for token in token_list if token != -100]
-
 
 class BrainDataset(Dataset):
     def __init__(self, path, tokenize_function=None): 
