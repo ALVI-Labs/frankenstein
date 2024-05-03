@@ -19,11 +19,13 @@ class MAEConfig(Serializable):
     # data params
     window_size: int = 1024
     n_electrodes: int = 256
-    patch_size: int = 32
+    # patch_size: int = 32
+    patch_size: int = 48
 
     # encoder
     dim: int = 256
-    n_layers: int = 8
+    # n_layers: int = 8
+    n_layers: int = 4
     head_dim: int = 32
     hidden_dim: int = 1024
     n_heads: int = 8
@@ -193,7 +195,7 @@ class CausalCrossAttention(nn.Module):
 
         self.kv_cache = None
 
-    def forward(self, x, context, attn_mask, use_kv_cache=None):
+    def forward(self, x, context, attn_mask=None, use_kv_cache=None):
         """
         context should have the same dim as x vectors. 
         context seqlen >> x seqlen
@@ -206,8 +208,10 @@ class CausalCrossAttention(nn.Module):
         k = rearrange(k, 'b t (nh c) -> b nh t c', nh = self.n_heads)
         v = rearrange(v, 'b t (nh c) -> b nh t c', nh = self.n_heads)
 
-        t_q, t_k = q.size(2), k.size(2)
-        attn_mask = attn_mask[..., -t_q:, -t_k:]
+        if attn_mask is not None:
+            t_q, t_k = q.size(2), k.size(2)
+            attn_mask = attn_mask[..., -t_q:, -t_k:]
+            
         res = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)  
 
         res = rearrange(res, 'b h t c -> b t (h c)')
@@ -496,18 +500,9 @@ class BrainFormer(nn.Module):
                 ln_f = nn.LayerNorm(config.dim), 
                 to_motion = nn.Linear(config.dim, config.output_dim))
         )
-    
-        # Compute attention masks for causality. 
-        downsample_factor = config.encoder.window_size // config.n_output_tokens
-        n_context_token_per_query = downsample_factor * (config.encoder.n_electrodes // config.encoder.patch_size)
-
-        cross_attn_mask = build_advanced_causal_mask(block_size=self.encoder.block_size, 
-                                                     tok_per_time=n_context_token_per_query)
-        cross_attn_mask = cross_attn_mask[::n_context_token_per_query]
-        self.register_buffer('cross_attn_mask', cross_attn_mask)
-
-        self_att_mask = build_advanced_causal_mask(block_size=config.n_output_tokens, tok_per_time=1)
-        self.register_buffer('self_attn_mask', self_att_mask)
+        
+        self.register_buffer('cross_attn_mask', None)
+        self.register_buffer('self_attn_mask', None)
 
         self.precompute_rope_cash = build_complex_rope_cache(dim=config.head_dim,
                                                              seq_len=config.n_output_tokens,
@@ -557,13 +552,13 @@ class BrainFormer(nn.Module):
         pred = self.perceiver.to_motion(pred)
 
         if targets is None:
-            return pred
+            return None, pred
         
         loss = F.l1_loss(pred, targets)
         return loss, pred
     
     @torch.no_grad()    
-    def inference(self, myo):
+    def inference(self, myo, date_info):
         """
         x (signal) - Time, Channel
         OUTPUTS - Time//8, N_BONES
