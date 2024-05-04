@@ -37,7 +37,7 @@ DATE_TO_INDEX = {'t12.2022.04.28': 0,
 
 
 
-def block_specific_scaling(brain_list, idx_list):
+def min_max_per_block_scaling(brain_list, idx_list):
     """
     Perform block-specific scaling on the input brain data.
 
@@ -124,19 +124,15 @@ def process_file(data_file):
     date = data_file.stem
     n_trials = data['blockIdx'].shape[0]
 
-
-    date_list = [date for _ in range(n_trials)]
-
     voltage_list = data['spikePow'][0][:]
     spikes_list  = data['tx4'][0][:]
     block_list   = data['blockIdx'][:, 0]
-
-    brain_list = process_signal(voltage_list, spikes_list, block_list)
-
-    
     sentence_list = data['sentenceText']
 
-    brain_list = process_signal(brain_list, block_list)
+    #another preproc
+    # brain_list = process_signal(voltage_list, spikes_list, block_list)
+
+    brain_list = min_max_per_block_scaling(spikes_list, block_list)
     sentence_list = process_text(sentence_list)
 
     date_list = [date] * n_trials
