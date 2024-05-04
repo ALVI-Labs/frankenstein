@@ -158,6 +158,14 @@ class GPT(nn.Module):
         if non_embedding:
             n_params -= self.transformer.wpe.weight.numel()
         return n_params
+    
+    @property
+    def dtype(self) -> torch.dtype:
+        return next(self.parameters()).dtype
+
+    @property
+    def device(self) -> torch.device:
+        return next(self.parameters()).device
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -168,9 +176,10 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, prefix=None, targets=None):
+              
         device = idx.device
-        
         t_words = idx.size(1)
+        
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         
         if prefix is not None:
@@ -179,7 +188,6 @@ class GPT(nn.Module):
 
         # assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
 
-        
         t_full = tok_emb.size(1)
 
         pos = torch.arange(0, t_full, dtype=torch.long, device=device)
@@ -196,8 +204,8 @@ class GPT(nn.Module):
         if targets is not None:            
             logits = self.lm_head(x)
 
-            pred = logits[:, :-1].view(-1, logits.size(-1))
-            gt = targets[:, 1: ].view(-1)
+            pred = logits[:, :-1].reshape(-1, logits.size(-1))
+            gt = targets[:, 1: ].reshape(-1)
 
             loss = F.cross_entropy(pred, gt, ignore_index=-100)
         else:

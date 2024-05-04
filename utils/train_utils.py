@@ -7,6 +7,7 @@ import torch
 from accelerate import Accelerator
 from simple_parsing import ArgumentParser
 from accelerate.utils import set_seed
+import wandb 
 
 @dataclass
 class TrainConfig():
@@ -89,7 +90,7 @@ def prepare_data_loaders(train_dataset, val_dataset, config):
     )
     return train_loader, val_loader
 
-def run_train_model(model, datasets, config, project_name='transformer'):
+def run_train_model(model, datasets, config, project_name='transformer', save_folder=Path('logs')):
     set_seed(42)
 
     mp = 'fp16' if config.mixed_precision else 'no'
@@ -105,10 +106,8 @@ def run_train_model(model, datasets, config, project_name='transformer'):
     print('Device for training: ', accelerator.device)
     print('Num devices: ', accelerator.num_processes)
 
-
-    SAVE_FOLDER = Path('logs') / config.exp_name
-    SAVE_FOLDER.mkdir(parents=True, exist_ok=True)
-
+    save_folder = save_folder / config.exp_name
+    save_folder.mkdir(parents=True, exist_ok=True)
 
     ## Prepare data, optimizer and scheduler
 
@@ -135,6 +134,7 @@ def run_train_model(model, datasets, config, project_name='transformer'):
                 optimizer.zero_grad(set_to_none=True)
                 
                 inputs, labels, date_info = batch
+
                 loss, _ = model(inputs, labels, date_info=date_info)
                 accelerator.backward(loss)
                 
@@ -168,7 +168,7 @@ def run_train_model(model, datasets, config, project_name='transformer'):
                 if mean_val_loss < best_val_loss:
                     best_val_loss = mean_val_loss
                 
-                    save_path = SAVE_FOLDER / f"step_{overall_step}_loss_{mean_val_loss:.4f}.safetensors"
+                    save_path = save_folder / f"step_{overall_step}_loss_{mean_val_loss:.4f}.safetensors"
                     safetensors.torch.save_file(accelerator.unwrap_model(model).state_dict(), save_path)
                     print('saved model: ', save_path.name)
                                     
@@ -181,5 +181,81 @@ def run_train_model(model, datasets, config, project_name='transformer'):
             
             if overall_step > config.max_steps:
                 accelerator.end_training()
+                print('Complete training')
+                break
+
+
+
+def simple_train_model(model, datasets, config, project_name='transformer'):
+    set_seed(42)
+    wandb.init(project=project_name)
+
+    SAVE_FOLDER = Path('logs') / config.exp_name
+    SAVE_FOLDER.mkdir(parents=True, exist_ok=True)
+
+    ## Prepare data, optimizer and scheduler
+    train_dataset, val_dataset = datasets
+    train_loader, val_loader = prepare_data_loaders(train_dataset, val_dataset, config)
+
+    optimizer = torch.optim.AdamW(model.parameters(), 
+                                  lr=config.learning_rate, 
+                                  weight_decay=config.weight_decay)
+    scheduler = init_lr_scheduler(config)
+    
+    overall_step = 0
+    best_val_loss = float('inf')
+
+    # model.train().to('float').to('cuda')
+
+    while True:
+        for batch in train_loader:
+            lr = scheduler(overall_step)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+                        
+            optimizer.zero_grad(set_to_none=True)
+
+            inputs, labels, date_info = batch
+            inputs = inputs.to('cuda')
+            labels = labels.to('cuda')
+            date_info = date_info.to('cuda')
+
+            loss, _ = model(inputs, labels, date_info=date_info)
+            loss.backward()
+            optimizer.step()
+
+            overall_step += 1
+            print('*', end = '')
+            wandb.log({'train/loss': loss.item(), 
+                       'lr': lr}, step=overall_step)
+
+            if (overall_step % config.eval_interval) == 0:
+                model.eval()
+                val_loss_list = []
+                for batch in val_loader:
+                    inputs, labels, date_info = batch
+                    with torch.no_grad():
+                        val_loss, _ = model(inputs, labels, date_info)
+                    val_loss_list.append(val_loss)
+                
+                ## printing 
+                mean_val_loss = torch.stack(val_loss_list).mean()
+
+
+                print(f"overall_steps {overall_step}: {loss.item()}")
+                print(f"val loss: {mean_val_loss}")
+                wandb.log({'val/loss': mean_val_loss},step=overall_step)
+            
+                ## saving weights (if better)
+                if mean_val_loss < best_val_loss:
+                    best_val_loss = mean_val_loss
+                
+                    save_path = SAVE_FOLDER / f"step_{overall_step}_loss_{mean_val_loss:.4f}.safetensors"
+                    safetensors.torch.save_file(model.state_dict(), save_path)
+                    print('saved model: ', save_path.name)
+                
+                model.train()
+            
+            if overall_step > config.max_steps:
                 print('Complete training')
                 break

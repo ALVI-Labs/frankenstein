@@ -218,7 +218,8 @@ class BrainDataset(Dataset):
         data = process_all_files(path)
             
 
-        self.inputs = data['brain_list']
+        self.inputs = data['brain_list']  # Convert to float32
+
         self.targets = data['sentence_list']
         self.date = data['date_list']
 
@@ -228,7 +229,6 @@ class BrainDataset(Dataset):
 
         bad_samples_idxs = find_long_samples(self.inputs, MAX_INPUT_LEN)
         self.inputs = pad_truncate_brain_list(self.inputs, MAX_INPUT_LEN)
-        
 
         print('bad_samples', bad_samples_idxs)
 
@@ -260,7 +260,8 @@ class BrainDataset(Dataset):
 
     def __getitem__(self, idx: int):
         
-        input = self.inputs[idx]
+        input = self.inputs[idx].astype(np.float32)
+
         target = self.targets_tokens[idx]
         
         date = self.date[idx]
