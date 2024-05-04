@@ -7,3 +7,5 @@ utils/__pycache__/
 
 notebooks_trainer/wandb
 notebooks_trainer/logs
+notebooks/wandb
+notebooks/logs
