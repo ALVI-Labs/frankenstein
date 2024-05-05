@@ -169,7 +169,7 @@ def run_train_model(model, datasets, config, project_name='transformer', save_fo
                     best_val_loss = mean_val_loss
                 
                     save_path = save_folder / f"step_{overall_step}_loss_{mean_val_loss:.4f}.safetensors"
-                    safetensors.torch.save_file(accelerator.unwrap_model(model).state_dict(), save_path)
+                    safetensors.torch.save_model(model, save_path)
                     print('saved model: ', save_path.name)
                                     
                 # ## Visualize 
@@ -251,7 +251,7 @@ def simple_train_model(model, datasets, config, project_name='transformer'):
                     best_val_loss = mean_val_loss
                 
                     save_path = SAVE_FOLDER / f"step_{overall_step}_loss_{mean_val_loss:.4f}.safetensors"
-                    safetensors.torch.save_file(model.state_dict(), save_path)
+                    safetensors.torch.save_model(model, save_path)
                     print('saved model: ', save_path.name)
                 
                 model.train()

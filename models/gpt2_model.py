@@ -351,3 +351,47 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
+
+
+    @torch.no_grad()
+    def generate_beam_search(self, idx, max_new_tokens, prefix=None, temperature=1.0, beam_width=5):
+        """
+        Generate text using beam search.
+        idx: LongTensor of shape (b, t), initial sequence of indices.
+        max_new_tokens: int, number of new tokens to generate.
+        beam_width: int, number of beams to maintain.
+        """
+        self.eval()  # Make sure the model is in evaluation mode
+        beams = idx.repeat(beam_width, 1)  # Duplicate initial idx for each beam
+        beam_scores = torch.zeros(beam_width).to(idx.device)  # Initialize beam scores
+
+        for _ in range(max_new_tokens):
+            idx_cond = beams if beams.size(1) <= self.config.block_size else beams[:, -self.config.block_size:]
+            _, logits = self(idx_cond, prefix=prefix)
+            logits = logits[:, -1, :] / temperature
+            logits = F.log_softmax(logits, dim=-1)  # Use log probabilities to prevent underflow
+
+            top_logits, top_indices = logits.topk(beam_width, dim=-1)  # Get top k logits and their indices
+            all_candidates = []
+            for i in range(beam_width):
+                for j in range(beam_width):
+                    new_score = beam_scores[i] + top_logits[i][j]
+                    all_candidates.append((new_score, i, top_indices[i][j]))
+
+            # Sort all candidates by score and select the best beams
+            all_candidates.sort(reverse=True, key=lambda x: x[0])
+            new_beams = torch.zeros_like(beams)
+            new_scores = torch.zeros(beam_width).to(idx.device)
+
+            for i in range(beam_width):
+                score, beam_idx, word_idx = all_candidates[i]
+                new_beams[i] = torch.cat((beams[beam_idx], word_idx.unsqueeze(0)))
+                new_scores[i] = score
+
+            beams = new_beams
+            beam_scores = new_scores
+
+        # Select the best beam
+        best_beam = beams[beam_scores.argmax()]
+        return best_beam
+
