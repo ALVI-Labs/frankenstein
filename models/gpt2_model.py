@@ -410,4 +410,46 @@ class GPT(nn.Module):
         # Select the best beam
         best_beam = beams[beam_scores.argmax()]
         return best_beam
+    
+
+    def beam_search(self, idx, max_new_tokens, prefix,temperature=1.0, topk=20, beam_width=3):
+        
+        self.eval()
+                
+        # Generate initial beam
+        _, logits = self(idx, prefix=prefix)
+        logits = logits[:, -1, :]
+        log_probs, indices = torch.topk(F.log_softmax(logits, dim=-1), beam_width)
+        
+        # Initialize beam
+        beam = [(indices[0][i].unsqueeze(0), log_probs[0][i], [idx[0, 0].item(), indices[0][i].item()]) for i in range(beam_width)]
+        
+        # Perform beam search
+        for _ in range(max_new_tokens - 1):
+            candidates = []
+            for prev_token, prev_log_prob, generated_tokens in beam:
+                idx = torch.cat((idx, prev_token.unsqueeze(0)), dim=-1)
+                _, logits = self(idx, prefix=prefix)
+                logits = logits[:, -1, :]
+                log_probs, indices = torch.topk(F.log_softmax(logits, dim=-1), beam_width)
+                
+                for i in range(beam_width):
+                    token = indices[0][i]
+                    log_prob = prev_log_prob + log_probs[0][i]
+                    tokens = generated_tokens + [token.item()]
+                    candidates.append((token.unsqueeze(0), log_prob, tokens))
+            
+            # Sort candidates by log probability and select top beam_size
+            candidates = sorted(candidates, key=lambda x: x[1], reverse=True)[:beam_width]
+            beam = candidates
+
+            # print('-----')
+        
+        # Get the generated sequence with the highest log probability
+        generated_tokens = beam[0][2]
+
+        print('Top3 scores: ', beam[0][1], beam[1][1], beam[2][1])
+        print('Top3 scores: ', beam[0][2], beam[1][2], beam[2][2])
+        
+        return generated_tokens 
 
