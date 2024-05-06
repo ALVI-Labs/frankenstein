@@ -3,8 +3,11 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 
+import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
+
+import string
 
 
 def process_signal(voltage_list, spikes_list, block_list):
@@ -49,6 +52,7 @@ def process_signal(voltage_list, spikes_list, block_list):
             brain_processed[trial] = scipy.ndimage.gaussian_filter1d(brain_processed[trial], sigma=1, axis=0)            
             
     return brain_processed
+
 
 def process_text(arr):
     return [str.strip() for str in arr]
@@ -119,3 +123,29 @@ class BrainDataset(Dataset):
         date = self.date[idx]
                 
         return input, target, date
+    
+    
+    
+def process_string(text):
+    text = text.lower()
+    punctuation = string.punctuation.replace("'", "")
+    text = ''.join(char for char in text if char not in punctuation)
+    return text
+
+
+def remove_punctuation(text):
+    punctuation = string.punctuation.replace("'", "")
+    text = ''.join(char for char in text if char not in punctuation)
+    return text
+
+
+def save_sentences_to_txt(fpath, sentences, string_processing_fn):
+    with open(fpath, 'w', encoding="utf-8") as file:
+        for sentence in sentences:
+            file.write(string_processing_fn(sentence) + "\n")
+            
+            
+def load_sentences_from_txt(fpath):
+    with open(fpath, 'r', encoding="utf-8") as file:
+        sentences = [line.strip() for line in file.readlines()]
+    return sentences
