@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from torch.nn.utils import weight_norm
 
 from vector_quantize_pytorch import ResidualVQ, VectorQuantize
-from pytorch_model_summary import summary
 
 import numpy as np
 from einops import rearrange
@@ -124,11 +123,11 @@ class Encoder(nn.Module):
         self.layers = nn.Sequential(
             CausalConv1d(in_channels=n_electrodes, out_channels=C, kernel_size=5),
             nn.ELU(),
-            EncoderBlock(in_channels=C, out_channels=C, stride=2),
+            EncoderBlock(in_channels=C, out_channels=2*C, stride=2),
             nn.ELU(),
-            EncoderBlock(in_channels=C, out_channels=C, stride=2),
+            EncoderBlock(in_channels=2*C, out_channels=4*C, stride=2),
             nn.ELU(),
-            CausalConv1d(in_channels=C, out_channels=D, kernel_size=3)
+            CausalConv1d(in_channels=4*C, out_channels=D, kernel_size=3)
         )
 
     def forward(self, x):
@@ -143,11 +142,11 @@ class Decoder(nn.Module):
         super().__init__()
         
         self.layers = nn.Sequential(
-            CausalConv1d(in_channels=D, out_channels=C, kernel_size=3),
+            CausalConv1d(in_channels=D, out_channels=4*C, kernel_size=3),
             nn.ELU(),
-            DecoderBlock(in_channels=C, out_channels=C, stride=2),
+            DecoderBlock(in_channels=4*C, out_channels=2*C, stride=2),
             nn.ELU(),
-            DecoderBlock(in_channels=C, out_channels=C, stride=2),
+            DecoderBlock(in_channels=2*C, out_channels=C, stride=2),
             nn.ELU(),
             CausalConv1d(in_channels=C, out_channels=n_channels_out, kernel_size=5)
         )
