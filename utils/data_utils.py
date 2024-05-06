@@ -3,7 +3,8 @@ from pathlib import Path
 import string
 import scipy
 import scipy.io
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+
 from collections import defaultdict
 from torch.utils.data import Dataset
 
@@ -40,7 +41,7 @@ import string
 
 
 
-def block_specific_scaling(brain_list, idx_list):
+def min_max_per_block_scaling(brain_list, idx_list):
     """
     Perform block-specific scaling on the input brain data.
 
@@ -72,6 +73,42 @@ def block_specific_scaling(brain_list, idx_list):
     # Scale each brain data array using the corresponding block scaler
     scaled_brain_list = [scalers[idx].transform(brain) for brain, idx in zip(brain_list, idx_list)]
     return scaled_brain_list
+
+
+def z_score_per_block_scaling(brain_list, idx_list):
+    """
+    Perform block-specific scaling on the input brain data.
+
+    Args:
+        brain_list (list): List of brain data arrays, each with shape [Time, 256].
+        idx_list (list): List of block indices corresponding to each brain data array.
+
+    Returns:
+        list: List of scaled brain data arrays.
+
+    # brain_list = [submit_dataset[i][0] for i in range(4)]
+    # idx_list = [0, 0, 100, 100]
+    # scaled_brain_list = block_specific_scaling(brain_list, idx_list)
+    """
+
+    
+    # Group brain indices by block index
+    block_idxs = defaultdict(list)
+    for i, idx in enumerate(idx_list):
+        block_idxs[idx].append(i)
+
+    # Create a scaler for each block
+    scalers = {}
+    for block_idx, indices in block_idxs.items():
+        all_brains_cat = np.concatenate([brain_list[i] for i in indices])
+        scaler = StandardScaler().fit(all_brains_cat)
+        scalers[block_idx] = scaler
+
+    # Scale each brain data array using the corresponding block scaler
+    scaled_brain_list = [scalers[idx].transform(brain) for brain, idx in zip(brain_list, idx_list)]
+    return scaled_brain_list
+
+
 
 
   
@@ -128,19 +165,22 @@ def process_file(data_file):
     date = data_file.stem
     n_trials = data['blockIdx'].shape[0]
 
-
-    date_list = [date for _ in range(n_trials)]
-
     voltage_list = data['spikePow'][0][:]
     spikes_list  = data['tx4'][0][:]
     block_list   = data['blockIdx'][:, 0]
-
-    brain_list = process_signal(voltage_list, spikes_list, block_list)
-
-    
     sentence_list = data['sentenceText']
 
-    brain_list = process_signal(brain_list, block_list)
+    #another preproc
+    voltage_list = z_score_per_block_scaling(voltage_list, block_list)
+    # spikes_list = min_max_per_block_scaling(spikes_list, block_list)
+    
+    # brain_list = []
+    # for voltage, spikes in zip(voltage_list, spikes_list):
+        # brain_list.append(np.concatenate([voltage, spikes], axis=1))
+    
+    brain_list = voltage_list
+    # brain_list = process_signal(voltage_list, spikes_list, block_list)
+    
     sentence_list = process_text(sentence_list)
 
     date_list = [date] * n_trials
@@ -250,28 +290,18 @@ def remove_padding(token_list):
 
 class BrainDataset(Dataset):
     def __init__(self, path, tokenize_function=None): 
-
         print('Runed processing of the ', path)
 
         data = process_all_files(path)
             
-
-        self.inputs = data['brain_list']
+        self.inputs = data['brain_list']  # Convert to float32
         self.targets = data['sentence_list']
         self.date = data['date_list']
-
 
         self.date_to_index = DATE_TO_INDEX
         
 
-        bad_samples_idxs = find_long_samples(self.inputs, MAX_INPUT_LEN)
-        self.inputs = pad_truncate_brain_list(self.inputs, MAX_INPUT_LEN)
-        
-
-        print('bad_samples', bad_samples_idxs)
-
-
-        # process texts
+        ### Process text data(padded) 
         self.targets_tokens = []
 
         if tokenize_function is not None:
@@ -283,8 +313,14 @@ class BrainDataset(Dataset):
         else:
             self.targets_tokens = self.targets[:]
         # self.targets_tokens = np.ndarray(self.targets_tokens, type=int)
-        self.remove_bad_samples(bad_samples_idxs)
-        
+
+        ### Process input data(padded)        
+        # bad_samples_idxs = find_long_samples(self.inputs, MAX_INPUT_LEN)
+        self.inputs = pad_truncate_brain_list(self.inputs, MAX_INPUT_LEN)
+        # print('bad_samples', bad_samples_idxs)
+        # self.remove_bad_samples(bad_samples_idxs)
+
+
 
     def __len__(self) -> int:
         return len(self.inputs)
@@ -298,7 +334,8 @@ class BrainDataset(Dataset):
 
     def __getitem__(self, idx: int):
         
-        input = self.inputs[idx]
+        input = self.inputs[idx].astype(np.float32)
+
         target = self.targets_tokens[idx]
         
         date = self.date[idx]
