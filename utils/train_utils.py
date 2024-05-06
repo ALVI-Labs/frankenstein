@@ -25,13 +25,13 @@ class TrainConfig():
     eval_interval: int = 1_000
     
     use_scheduler: bool = True
-    warmup_iters: int = 2_000
-    lr_decay_iters: int = 50_000
+    warmup_iters: int = 1_000
+    lr_decay_iters: int = 20_000
     
     num_workers: int = 3
     pin_memory: bool = True
     
-    grad_clip: float = 1.0
+    grad_clip: float = 2.0
     mixed_precision: bool = True
 
     visualize_predictions: bool = False
@@ -139,7 +139,7 @@ def run_train_model(model, datasets, config, project_name='transformer', save_fo
                 accelerator.backward(loss)
                 
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_value_(model.parameters(), config.grad_clip)
+                    accelerator.clip_grad_norm_(model.parameters(), config.grad_clip)
                 optimizer.step()
 
             overall_step += 1
