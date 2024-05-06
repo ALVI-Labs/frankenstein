@@ -1,5 +1,6 @@
 import numpy as np
 from pathlib import Path
+import string
 import scipy
 import scipy.io
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
@@ -34,6 +35,8 @@ DATE_TO_INDEX = {'t12.2022.04.28': 0,
                 't12.2022.08.18': 21,
                 't12.2022.08.23': 22,
                 't12.2022.08.25': 23}
+
+import string
 
 
 
@@ -152,6 +155,7 @@ def process_signal(voltage_list, spikes_list, block_list):
             
     return brain_processed
 
+
 def process_text(arr):
     return [str.strip() for str in arr]
 
@@ -194,6 +198,35 @@ def process_all_files(path):
 
     return data
 
+
+""" TEXT UTILS """
+
+def process_string(text):
+    text = text.lower()
+    punctuation = string.punctuation.replace("'", "")
+    text = ''.join(char for char in text if char not in punctuation)
+    return text
+
+
+def remove_punctuation(text):
+    punctuation = string.punctuation.replace("'", "")
+    text = ''.join(char for char in text if char not in punctuation)
+    return text
+
+
+def save_sentences_to_txt(fpath, sentences, string_processing_fn):
+    with open(fpath, 'w', encoding="utf-8") as file:
+        for sentence in sentences:
+            file.write(string_processing_fn(sentence) + "\n")
+            
+            
+def load_sentences_from_txt(fpath):
+    with open(fpath, 'r', encoding="utf-8") as file:
+        sentences = [line.strip() for line in file.readlines()]
+    return sentences
+
+
+
 def find_long_samples(sample_list, max_length):
     """
     Find the indices of bad samples (length > max_length) in the list.
@@ -232,6 +265,7 @@ def pad_truncate_brain_list(brain_list, max_length):
         padded_brain_list.append(padded_brain)
     
     return padded_brain_list
+
 
 def get_tokenizer(tokenizer):
     bos = tokenizer.bos_token
@@ -307,4 +341,6 @@ class BrainDataset(Dataset):
         date = self.date[idx]
         date_idx = self.date_to_index[date]
                 
-        return input, target, date_idx
+        return input, target, date
+    
+
