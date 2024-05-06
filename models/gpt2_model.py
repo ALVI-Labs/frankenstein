@@ -349,8 +349,8 @@ class GPT(nn.Module):
             idx_next = torch.multinomial(probs, num_samples=1)
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
-
-        return idx
+        
+        return idx[0]
 
     @torch.no_grad()
     def generate_beam_search(self, idx, max_new_tokens, prefix, temperature=1.0, topk=20, beam_width=5):
