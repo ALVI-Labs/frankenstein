@@ -159,7 +159,7 @@ def run_train_model(model, datasets, config, project_name='transformer', save_fo
                 ## printing 
                 mean_val_loss = torch.stack(val_loss_list).mean()
 
-
+                print('')
                 print(f"overall_steps {overall_step}: {loss.item()}")
                 print(f"val loss: {mean_val_loss}")
                 accelerator.log({'val/loss': mean_val_loss},step=overall_step)
@@ -235,13 +235,13 @@ def simple_train_model(model, datasets, config, project_name='transformer'):
                 for batch in val_loader:
                     inputs, labels, date_info = batch
                     with torch.no_grad():
-                        val_loss, _ = model(inputs, labels, date_info)
+                        val_loss, _, rec_loss, commit_loss, perp = model(inputs, labels, date_info)
                     val_loss_list.append(val_loss)
                 
                 ## printing 
                 mean_val_loss = torch.stack(val_loss_list).mean()
 
-
+                print('')
                 print(f"overall_steps {overall_step}: {loss.item()}")
                 print(f"val loss: {mean_val_loss}")
                 wandb.log({'val/loss': mean_val_loss},step=overall_step)

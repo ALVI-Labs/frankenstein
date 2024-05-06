@@ -255,7 +255,7 @@ def remove_padding(token_list):
     return [token for token in token_list if token != -100]
 
 class BrainDataset(Dataset):
-    def __init__(self, path, tokenize_function=None): 
+    def __init__(self, path, tokenize_function=None, max_input_len=786): 
         print('Runed processing of the ', path)
 
         data = process_all_files(path)
@@ -282,9 +282,12 @@ class BrainDataset(Dataset):
 
         ### Process input data(padded)        
         # bad_samples_idxs = find_long_samples(self.inputs, MAX_INPUT_LEN)
-        self.inputs = pad_truncate_brain_list(self.inputs, MAX_INPUT_LEN)
+        self.inputs = pad_truncate_brain_list(self.inputs, max_input_len)
         # print('bad_samples', bad_samples_idxs)
         # self.remove_bad_samples(bad_samples_idxs)
+
+        print('len:', len(self))
+        print('max input len', max_input_len)
 
 
 
