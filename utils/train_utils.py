@@ -101,12 +101,13 @@ def run_train_model(model, datasets, config, project_name='transformer', save_fo
                                 log_with ='wandb')
     accelerator.init_trackers(
                 project_name=project_name, 
-                config=config)
+                config=config, 
+                init_kwargs={"wandb":{"name":config.exp_name}})
 
     print('Device for training: ', accelerator.device)
     print('Num devices: ', accelerator.num_processes)
 
-    save_folder = save_folder / config.exp_name
+    save_folder = save_folder / project_name / config.exp_name
     save_folder.mkdir(parents=True, exist_ok=True)
 
     ## Prepare data, optimizer and scheduler

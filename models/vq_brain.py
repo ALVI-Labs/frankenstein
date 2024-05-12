@@ -131,13 +131,8 @@ class EncoderBlock(nn.Module):
                          out_channels=in_channels,
                          dilation=1),
             nn.ELU(),
-            
             ResidualUnit(in_channels=in_channels,
                          out_channels=in_channels,
-                         dilation=1),
-            nn.ELU(),
-            ResidualUnit(in_channels=in_channels,
-                         out_channels=in_channels, 
                          dilation=1),
             nn.ELU(),
             ResidualUnit(in_channels=in_channels,
@@ -272,7 +267,7 @@ class SoundStream(nn.Module):
         o = self.decoder(quantized)
         
         # rec_loss = F.mse_loss(o, x)
-        total_loss = self.custom_mse_loss(o, x)
+        total_loss = self.custom_l1_loss(o, x)
     
         return total_loss, o
     
@@ -280,6 +275,14 @@ class SoundStream(nn.Module):
         real_data_ids = ~torch.all((gt==0), dim=2)
 
         loss_tensor = F.mse_loss(pred, gt, reduction='none')
+        loss_real_values = loss_tensor[real_data_ids.nonzero(as_tuple=True)]
+        loss = torch.mean(loss_real_values)
+
+        return loss
+    def custom_l1_loss(self, pred, gt):
+        real_data_ids = ~torch.all((gt==0), dim=2)
+
+        loss_tensor = F.l1_loss(pred, gt, reduction='none')
         loss_real_values = loss_tensor[real_data_ids.nonzero(as_tuple=True)]
         loss = torch.mean(loss_real_values)
 

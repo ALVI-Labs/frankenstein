@@ -289,7 +289,7 @@ def remove_padding(token_list):
     return [token for token in token_list if token != -100]
 
 class BrainDataset(Dataset):
-    def __init__(self, path, tokenize_function=None, max_input_len=768): 
+    def __init__(self, path, tokenize_function=None, transform=None, max_input_len=768): 
         print('Runed processing of the ', path)
 
         data = process_all_files(path)
@@ -299,6 +299,7 @@ class BrainDataset(Dataset):
         self.date = data['date_list']
 
         self.date_to_index = DATE_TO_INDEX
+        self.transform = transform
         
 
         ### Process text data(padded) 
@@ -336,14 +337,24 @@ class BrainDataset(Dataset):
             del self.date[i]
 
     def __getitem__(self, idx: int):
+        """
+        return 
+            brain with shape: [time, n_channels]
+            target: [n_tokens]
+            date_info: 1
+        """
         
         input = self.inputs[idx].astype(np.float32)
+
+        if self.transform is not None:
+            # transform input shape: [num_channels, time]
+            input = self.transform(input.T, sample_rate=50).T
 
         target = self.targets_tokens[idx]
         
         date = self.date[idx]
         date_idx = self.date_to_index[date]
                 
-        return input, target, date
+        return input, target, date_idx
     
 
