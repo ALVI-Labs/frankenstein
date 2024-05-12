@@ -1,5 +1,6 @@
 import numpy as np
 from pathlib import Path
+import string
 import scipy
 import scipy.io
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
@@ -34,6 +35,8 @@ DATE_TO_INDEX = {'t12.2022.04.28': 0,
                 't12.2022.08.18': 21,
                 't12.2022.08.23': 22,
                 't12.2022.08.25': 23}
+
+import string
 
 
 
@@ -152,6 +155,7 @@ def process_signal(voltage_list, spikes_list, block_list):
             
     return brain_processed
 
+
 def process_text(arr):
     return [str.strip() for str in arr]
 
@@ -162,19 +166,19 @@ def process_file(data_file):
     n_trials = data['blockIdx'].shape[0]
 
     voltage_list = data['spikePow'][0][:]
-    spikes_list  = data['tx4'][0][:]
+    spikes_list  = data['tx1'][0][:]
     block_list   = data['blockIdx'][:, 0]
     sentence_list = data['sentenceText']
 
     #another preproc
-    voltage_list = z_score_per_block_scaling(voltage_list, block_list)
-    # spikes_list = min_max_per_block_scaling(spikes_list, block_list)
+    # voltage_list = z_score_per_block_scaling(voltage_list, block_list)
+    spikes_list = min_max_per_block_scaling(spikes_list, block_list)
     
     # brain_list = []
     # for voltage, spikes in zip(voltage_list, spikes_list):
         # brain_list.append(np.concatenate([voltage, spikes], axis=1))
     
-    brain_list = voltage_list
+    brain_list = spikes_list
     # brain_list = process_signal(voltage_list, spikes_list, block_list)
     
     sentence_list = process_text(sentence_list)
@@ -193,6 +197,35 @@ def process_all_files(path):
         data['date_list'].extend(dates)
 
     return data
+
+
+""" TEXT UTILS """
+
+def process_string(text):
+    text = text.lower()
+    punctuation = string.punctuation.replace("'", "")
+    text = ''.join(char for char in text if char not in punctuation)
+    return text
+
+
+def remove_punctuation(text):
+    punctuation = string.punctuation.replace("'", "")
+    text = ''.join(char for char in text if char not in punctuation)
+    return text
+
+
+def save_sentences_to_txt(fpath, sentences, string_processing_fn):
+    with open(fpath, 'w', encoding="utf-8") as file:
+        for sentence in sentences:
+            file.write(string_processing_fn(sentence) + "\n")
+            
+            
+def load_sentences_from_txt(fpath):
+    with open(fpath, 'r', encoding="utf-8") as file:
+        sentences = [line.strip() for line in file.readlines()]
+    return sentences
+
+
 
 def find_long_samples(sample_list, max_length):
     """
@@ -233,6 +266,7 @@ def pad_truncate_brain_list(brain_list, max_length):
     
     return padded_brain_list
 
+
 def get_tokenizer(tokenizer):
     bos = tokenizer.bos_token
     eos = tokenizer.eos_token
@@ -255,7 +289,7 @@ def remove_padding(token_list):
     return [token for token in token_list if token != -100]
 
 class BrainDataset(Dataset):
-    def __init__(self, path, tokenize_function=None, max_input_len=786): 
+    def __init__(self, path, tokenize_function=None, max_input_len=768): 
         print('Runed processing of the ', path)
 
         data = process_all_files(path)
@@ -310,4 +344,6 @@ class BrainDataset(Dataset):
         date = self.date[idx]
         date_idx = self.date_to_index[date]
                 
-        return input, target, date_idx
+        return input, target, date
+    
+

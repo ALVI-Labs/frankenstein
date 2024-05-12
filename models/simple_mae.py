@@ -119,7 +119,7 @@ class CausalSelfAttention(nn.Module):
 
         if attn_mask is not None:
             t_q, t_k = q.size(1), k.size(1)
-            attn_mask = attn_mask[..., -t_q:, -t_k:]
+            attn_mask = attn_mask[..., :t_q, :t_k:]
 
         q = q.transpose(1, 2)  # (B, nh, T, c)
         k = k.transpose(1, 2)  # (B, nh, T, c)
@@ -227,15 +227,6 @@ class CrossBlock(nn.Module):
 
         return x
 
-
-def create_attention_mask_from_padding(x, pad_value=0):
-    """
-    Update the attention mask based on padded positions in the input tensor.ns.
-    """
-    is_padded = (x == pad_value).all(dim=2)  
-    attn_mask = ~is_padded.unsqueeze(1) & ~is_padded.unsqueeze(2)  # Create the square attention mask
-
-    return attn_mask
 ## Models.
 class SimpleEncoder(nn.Module):
     def __init__(self, config):
@@ -246,7 +237,7 @@ class SimpleEncoder(nn.Module):
             emb = nn.Linear(config.patch_size, config.dim),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layers)]),
             ln_f = nn.LayerNorm(config.dim),
-        ))    
+        ))
 
         self.precompute_rope_cash = build_complex_rope_cache(dim=self.config.head_dim,
                                                              seq_len=config.block_size,
@@ -265,13 +256,13 @@ class SimpleEncoder(nn.Module):
         attn_mask = self.attn_mask if attn_mask is None else attn_mask
         rope_cache = self.rope_cache if rope_cache is None else rope_cache
 
+        attn_mask = attn_mask.to(self.device)
+
         # embedding
         x = self.transformer.emb(x)
 
         for block in self.transformer.h:
-            x = block(x, 
-                      attn_mask=attn_mask, 
-                      rope=rope_cache)
+            x = block(x, attn_mask=attn_mask, rope=rope_cache)
 
         x = self.transformer.ln_f(x)
         return x 
@@ -343,14 +334,13 @@ class SimpleMAE(nn.Module):
 
         ### Preparing attn, rope, masking
         masked_indices, unmasked_indices = self.get_masking_indices(masking_ratio, x) # [b, N]
-        
         batch_range = torch.arange(b, device=x.device)[:, None]
 
         is_padded = (x == 0).all(dim=2)
-        attn_mask = ~is_padded.unsqueeze(1) & ~is_padded.unsqueeze(2)
+        attn_mask = ~is_padded.unsqueeze(1).repeat(1, x.size(1), 1)
+        
         attn_mask_unmasked = attn_mask[batch_range[..., None], unmasked_indices[..., None], unmasked_indices[:, None, :]]
         attn_mask_unmasked = rearrange(attn_mask_unmasked, 'b h w -> b 1 h w')
-        
         
         rope_cache = self.encoder.rope_cache.expand(b, -1, -1)
         rope_cache_unmasked = rope_cache[batch_range, unmasked_indices]
@@ -358,10 +348,8 @@ class SimpleMAE(nn.Module):
 
         ### ENCODER
         
-        tokens = x[batch_range, unmasked_indices]
-
+        tokens = x[batch_range, unmasked_indices]        
         tokens = self.encoder(tokens, attn_mask=attn_mask_unmasked, rope_cache=rope_cache_unmasked)
-        
 
         ### DECODER 
         attn_mask = rearrange(attn_mask, 'b h w -> b 1 h w')
@@ -375,16 +363,12 @@ class SimpleMAE(nn.Module):
         decoder_pos_emb = self.decoder_pos_emb(torch.cat([unmasked_indices, masked_indices], 1))
         decoder_tokens = decoder_tokens + decoder_pos_emb
 
-
-        print('kokens, attn_mask_unmasked, rope_cache_unmasked', decoder_tokens.shape, attn_mask.shape, rope_cache.shape)
         for block in self.decoder.h:
             decoder_tokens = block(decoder_tokens, attn_mask)
-
+            
         pred_tokens = self.to_signals(decoder_tokens)
 
-        
         ### LOSS: mse on masked and not padded tokens.
-    
         tokens_pred_masked = pred_tokens[batch_range, masked_indices]
         tokens_real_masked = x[batch_range, masked_indices]
 
@@ -393,8 +377,11 @@ class SimpleMAE(nn.Module):
         loss_tensor = F.mse_loss(tokens_pred_masked, tokens_real_masked, reduction='none')
         loss_real_values = loss_tensor[mask_valid.nonzero(as_tuple=True)]
         recon_loss = torch.mean(loss_real_values)
+    
+        # print(loss_tensor)
+        
         if return_preds:
-            # what we masked?
+
             binary_mask = torch.zeros_like(x, device=x.device, dtype=x.dtype) 
             binary_mask[batch_range, masked_indices] = 1
 
