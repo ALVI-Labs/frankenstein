@@ -300,6 +300,8 @@ class SoundStream(nn.Module):
         x = rearrange(x, 'b t (c f) -> (b c) t f', f=self.n_electrodes)
         e = self.encoder(x)
         quantized, indices = self.quantizer(e)
+        indices = rearrange(indices, '(b c) t -> b t c', c=256)
+        quantized = rearrange(quantized, '(b c) t e -> b t c e', c=256)
 
         return indices, quantized
     
