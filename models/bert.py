@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from einops.layers.torch import Rearrange
+from einops import rearrange
 
 from .simple_mae_abs import Block
 from simple_parsing import Serializable
@@ -29,12 +30,16 @@ class BrainBert(nn.Module):
     def __init__(self, config, vq_model):
         super().__init__()
         self.config = config
+        
+        self.mask_ratio = config.mask_ratio
+        self.n_electrodes = config.n_electrodes
+        self.tokenizer_downsample = config.tokenizer_downsample
+        self.dim = config.dim
+        
         self.tokenizer = vq_model
         codebook_size = vq_model.codebook_size
         
         self.MASK_ID = codebook_size
-        self.mask_ratio = config.mask_ratio
-        self.tokenizer_downsample = config.tokenizer_downsample
         self.pad_value = 0
         
         self.transformer = nn.ModuleDict(dict(
@@ -43,9 +48,9 @@ class BrainBert(nn.Module):
             time_blocks = nn.ModuleList([Block(config) for _ in range(config.n_layers)]),
             ln_f = nn.LayerNorm(config.dim),
         ))
-        self.to_bt_c = Rearrange('b t c d -> (b t) c d', c=config.n_electrodes, t=config.window_size, d=config.dim)
-        self.to_bc_t = Rearrange('(b t) c d -> (b c) t d', c=config.n_electrodes, t=config.window_size, d=config.dim)
-        self.to_b_t_c = Rearrange('(b c) t d -> b t c d', c=config.n_electrodes, t=config.window_size, d=config.dim )
+
+        # self.to_bc_t = Rearrange('(b t) c d -> (b c) t d', c=config.n_electrodes, d=config.dim)
+        # self.to_b_t_c = Rearrange('(b c) t d -> b t c d', c=config.n_electrodes, d=config.dim)
         
 
         self.spatial_pe = nn.Parameter(torch.randn(1, 1, config.n_electrodes, config.dim))
@@ -103,22 +108,29 @@ class BrainBert(nn.Module):
         time_attn_mask = torch.repeat_interleave(time_attn_mask, self.config.n_electrodes, 0)
         time_attn_mask = time_attn_mask.unsqueeze(1) # b, 1, T, T
                 
-        indices_out, _ = self.tokenizer.get_quantize_vectors(x)
-        indices_out = indices_out.to(torch.long)
-        indices = indices_out.contiguous()
+        indices_out = self.tokenizer.get_indices(x)       
+        indices = torch.clone(indices_out)
         
         if self.mask_ratio != 0.0:
             indices = self.add_mask(indices)
 
+        print('indices_out', torch.max(indices_out))
+        print('indices', torch.max(indices))
         
         tokens = self.transformer.emb(indices)
         tokens = tokens + self.spatial_pe + self.time_pe
+        
+        b, t, c, d = tokens.size()
 
+        tokens = rearrange(tokens, 'b t c d -> (b t) c d', b=b, t=t, c=self.n_electrodes, d=self.dim)
+        
         for space_block, time_block in zip(self.transformer.space_blocks, self.transformer.time_blocks):
-            tokens = space_block(self.to_bt_c(tokens))
-            tokens = time_block(self.to_bc_t(tokens), attn_mask=time_attn_mask)
-            tokens = self.to_b_t_c(tokens)
+            tokens = space_block(tokens)
+            tokens = rearrange(tokens, '(b t) c d -> (b c) t d', b=b, t=t, c=self.n_electrodes, d=self.dim)
+            tokens = time_block(tokens, attn_mask=time_attn_mask)
+            tokens = rearrange(tokens, '(b c) t d -> (b t) c d', b=b, t=t, c=self.n_electrodes, d=self.dim)
 
+        tokens = rearrange(tokens, '(b t) c d -> b t c d', b=b, t=t, c=self.n_electrodes, d=self.dim)
         y = self.transformer.ln_f(tokens)
 
         loss = None
@@ -130,7 +142,7 @@ class BrainBert(nn.Module):
             # indices_out[indices!=self.MASK_ID] = -100 # masked only loss calculation
             indices_out[is_padded] = -100
             
-            loss = F.cross_entropy(y.view(-1, y.size(-1)), indices_out.reshape(-1))    
+            loss = F.cross_entropy(y.view(-1, y.size(-1)), indices_out.to(torch.long).view(-1))    
 
         if return_indices:
             return loss, y, indices

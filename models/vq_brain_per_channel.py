@@ -9,8 +9,15 @@ import numpy as np
 from einops import rearrange
 
 from vector_quantize_pytorch import FSQ
+from dataclasses import dataclass
+from simple_parsing import Serializable
 
-
+@dataclass
+class VAEConfig(Serializable):
+    C: int = 128
+    n_features: int = 1
+    levels: tuple = (8, 5, 5, 5)
+    stride_list: tuple = (2, 2, 2)
 
 
 """
@@ -142,11 +149,27 @@ class EncoderBlock(nn.Module):
             CausalConv1d(in_channels=in_channels,
                          out_channels=out_channels,
                          kernel_size=2*stride, 
-                         stride=stride)
+                         stride=stride),
+            nn.ELU()
         )
 
     def forward(self, x):
         return self.layers(x)
+
+class Encoder(nn.Module):
+    def __init__(self, C, D, n_electrodes, stride_list):
+        super().__init__()
+        self.first_layer = CausalConv1d(in_channels=n_electrodes, out_channels=C, kernel_size=3)
+        self.act = nn.ELU()
+        self.blocks = nn.Sequential(*[EncoderBlock(in_channels=C, out_channels=C, stride=stride) for stride in stride_list])
+        self.last_layer = CausalConv1d(in_channels=C, out_channels=D, kernel_size=3)
+
+    def forward(self, x):
+        x = self.first_layer(x)
+        x = self.act(x)
+        x = self.blocks(x)
+        x = self.last_layer(x)
+        return x
 
 
 class DecoderBlock(nn.Module):
@@ -169,57 +192,30 @@ class DecoderBlock(nn.Module):
             ResidualUnit(in_channels=out_channels, 
                          out_channels=out_channels,
                          dilation=1),
-
+            nn.ELU()
         )
 
     def forward(self, x):
         return self.layers(x)
 
-
-class Encoder(nn.Module):
-    def __init__(self, C, D, n_electrodes):
-        super().__init__()
-
-        self.layers = nn.Sequential(
-            CausalConv1d(in_channels=n_electrodes, out_channels=C, kernel_size=3),
-            nn.ELU(),
-            EncoderBlock(in_channels=C, out_channels=2*C, stride=2),
-            nn.ELU(),
-            EncoderBlock(in_channels=2*C, out_channels=2*C, stride=2),
-            nn.ELU(),
-            CausalConv1d(in_channels=2*C, out_channels=D, kernel_size=3)
-        )
-
-    def forward(self, x):
-        x= rearrange(x, 'b t c -> b c t')
-        x= self.layers(x)
-        x= rearrange(x, 'b c t -> b t c')
-        return x
-
-
 class Decoder(nn.Module):
-    def __init__(self, C, D, n_channels_out):
+    def __init__(self, C, D, n_channels_out, stride_list):
         super().__init__()
-        
-        self.layers = nn.Sequential(
-            CausalConv1d(in_channels=D, out_channels=2*C, kernel_size=3),
-            nn.ELU(),
-            DecoderBlock(in_channels=2*C, out_channels=2*C, stride=2),
-            nn.ELU(),
-            DecoderBlock(in_channels=2*C, out_channels=C, stride=2),
-            nn.ELU(),
-            CausalConv1d(in_channels=C, out_channels=n_channels_out, kernel_size=3)
-        )
+        self.first_layer = CausalConv1d(in_channels=D, out_channels=C, kernel_size=3)
+        self.act = nn.ELU()
+        self.blocks = nn.Sequential(*[DecoderBlock(in_channels=C, out_channels=C, stride=2) for stride in stride_list])
+        self.last_layer = CausalConv1d(in_channels=C, out_channels=n_channels_out, kernel_size=3)
     
     def forward(self, x):
-        x= rearrange(x, 'b t c -> b c t')
-        x= self.layers(x)
-        x= rearrange(x, 'b c t -> b t c')
+        x = self.first_layer(x)
+        x = self.act(x)
+        x = self.blocks(x)
+        x = self.last_layer(x)
         return x
 
 
 class SoundStream(nn.Module):
-    def __init__(self, C, n_electrodes, levels=[8,5,5,5]):
+    def __init__(self, C, n_features, levels=[8,5,5,5], stride_list=[2, 2]):
         super().__init__()
         """
         [1, 16*4, 32] - 1.5 sec 
@@ -234,28 +230,19 @@ class SoundStream(nn.Module):
         vec_emb - [16] * 8 
         codebook - [16] * 2048
         """
-        D = len(levels)
-        self.n_electrodes = n_electrodes
-        self.encoder = Encoder(C=C, D=D, n_electrodes=n_electrodes)
-        self.decoder = Decoder(C=C, D=D, n_channels_out=n_electrodes)
+        self.D = len(levels)
+        self.n_features = n_features
+        self.downsample = np.prod(stride_list)
+        self.encoder = Encoder(C=C, D=self.D, n_electrodes=n_features, stride_list=stride_list)
+        self.decoder = Decoder(C=C, D=self.D, n_channels_out=n_features, stride_list=stride_list[::-1])
         
-        self.quantizer = FSQ(levels=levels)
+        self.quantizer = FSQ(levels=levels, channel_first=True)
 
         self.codebook_size = self.quantizer.codebook_size 
         print("self.codebook_size", self.codebook_size)
-        
-        # self.quantizer = VectorQuantize(
-        #                     dim = D,
-        #                     codebook_size = codebook_size,
-        #                     # codebook_dim = 8,      # paper proposes setting this to 32 or as low as 8 to increase codebook usage
-        #                     commitment_weight = 0.25,
-        #                     channel_last = True,
-        #                     kmeans_init = True,
-        #                     threshold_ema_dead_code = 2,
-        #                     use_cosine_sim = use_cosine_sim
-        #                 )
+        print("self.downsample", self.downsample)
    
-    def forward(self, x, targets=None, date_info=None,  print_loss=False):
+    def forward(self, x, targets=None, date_info=None,  return_preds=False):
         """
         Params:
             x: is tensor with shape (Batch, Time, Channels)
@@ -263,21 +250,45 @@ class SoundStream(nn.Module):
             total_loss: mse on nonpadded data
             o: is tensor with shape (batch, Time, Channels)
         """
-
-        x = rearrange(x, 'b t (c f) -> (b c) t f', c=256, f=self.n_electrodes) #4, 768, 256 -> 4x256, 768, 1
+        
+        x = rearrange(x, 'b t (c f) -> (b c) f t', c=256, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
         
         e = self.encoder(x)
+        # reshaping for quantization
         quantized, indices = self.quantizer(e)
         o = self.decoder(quantized)
-        
-        # rec_loss = F.mse_loss(o, x)
+
         total_loss = F.l1_loss(o, x) 
         # total_loss = self.custom_l1_loss(o, x)
+        if return_preds:
+            o = rearrange(o, '(b c) f t -> b t (c f)', c=256, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
+            return total_loss, o
+        else:
+            return total_loss, None
 
-        o = rearrange(o, '(b c) t f -> b t (c f)', c=256, f=self.n_electrodes) #4, 768, 256 -> 4x256, 768, 1
+
+    def get_indices(self, x):
+        b = x.size(0)    
+        x = rearrange(x, 'b t (c f) -> (b c) f t', b=b, f=self.n_features)
     
-        return total_loss, o
-    
+        e = self.encoder(x)
+        _, indices = self.quantizer(e)
+        
+        return rearrange(indices, '(b c) t -> b t c', b=b, c=256).contiguous()
+        
+    def decode_indices(self, indices):
+        """
+        indices: (b t c)
+        return: (b t (c f))
+        """
+        b = indices.size(0)
+        
+        indices  = rearrange(indices, 'b t c -> (b c) t')
+        quantized = self.quantizer.indices_to_codes(indices)    
+        reconstruct = self.decoder(quantized)
+        reconstruct = rearrange(reconstruct, '(b c) f t -> b t (c f)', b=b, c=256, f=self.n_features)
+        return reconstruct
+        
     def custom_mse_loss(self, pred, gt):
         real_data_ids = ~torch.all((gt==0), dim=2)
 
@@ -294,17 +305,6 @@ class SoundStream(nn.Module):
         loss = torch.mean(loss_real_values)
 
         return loss
-
-
-    def get_quantize_vectors(self, x):
-        x = rearrange(x, 'b t (c f) -> (b c) t f', f=self.n_electrodes)
-        e = self.encoder(x)
-        quantized, indices = self.quantizer(e)
-        indices = rearrange(indices, '(b c) t -> b t c', c=256)
-        quantized = rearrange(quantized, '(b c) t e -> b t c e', c=256)
-
-        return indices, quantized
-    
     
     def calculate_perp(self, indices):
         encodings = F.one_hot(indices.to(torch.int64), self.codebook_size).float().reshape(-1, self.codebook_size)
