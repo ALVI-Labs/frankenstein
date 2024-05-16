@@ -36,6 +36,17 @@ class TrainConfig():
 
     visualize_predictions: bool = False
 
+def load_model_weights(model, weights):
+    try:
+        safetensors.torch.load_model(model, weights)
+        print('load default weights')
+    except:
+        model = torch.compile(model)
+        safetensors.torch.load_model(model, weights)
+        model = model._orig_mod
+        print('load compiled weights')
+
+    return model
 
 def count_parameters(model): 
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
