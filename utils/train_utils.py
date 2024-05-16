@@ -12,6 +12,8 @@ import wandb
 @dataclass
 class TrainConfig():
     exp_name: str = 'default'
+    project_name: str =' awesome_model' 
+    save_folder: str = 'logs'
 
     batch_size: int = 256
     grad_accum: int = 1
@@ -35,6 +37,7 @@ class TrainConfig():
     mixed_precision: bool = True
 
     visualize_predictions: bool = False
+
 
 def load_model_weights(model, weights):
     try:
@@ -101,7 +104,7 @@ def prepare_data_loaders(train_dataset, val_dataset, config):
     )
     return train_loader, val_loader
 
-def run_train_model(model, datasets, config, project_name='transformer', save_folder=Path('logs')):
+def run_train_model(model, datasets, config, model_config):
     set_seed(42)
 
     mp = 'fp16' if config.mixed_precision else 'no'
@@ -111,14 +114,14 @@ def run_train_model(model, datasets, config, project_name='transformer', save_fo
                                 split_batches=True, 
                                 log_with ='wandb')
     accelerator.init_trackers(
-                project_name=project_name, 
-                config=config, 
+                project_name=config.project_name, 
+                config={**config.__dict__, **model_config.__dict__}, 
                 init_kwargs={"wandb":{"name":config.exp_name}})
 
     print('Device for training: ', accelerator.device)
     print('Num devices: ', accelerator.num_processes)
 
-    save_folder = save_folder / project_name / config.exp_name
+    save_folder = config.save_folder / config.project_name / config.exp_name
     save_folder.mkdir(parents=True, exist_ok=True)
 
     ## Prepare data, optimizer and scheduler

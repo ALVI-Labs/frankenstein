@@ -8,6 +8,7 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from collections import defaultdict
 from torch.utils.data import Dataset
 
+
 MAX_INPUT_LEN = 768 # 768
 MAX_TOKENS = 25
 
@@ -289,7 +290,7 @@ def remove_padding(token_list):
     return [token for token in token_list if token != -100]
 
 class BrainDataset(Dataset):
-    def __init__(self, path, tokenize_function=None, transform=None, max_input_len=768): 
+    def __init__(self, path, tokenize_function=None, transform=None): 
         print('Runed processing of the ', path)
 
         data = process_all_files(path)
@@ -313,16 +314,12 @@ class BrainDataset(Dataset):
                 self.targets_tokens.append(tokens_padded)
         else:
             self.targets_tokens = self.targets[:]
-        # self.targets_tokens = np.ndarray(self.targets_tokens, type=int)
 
-        ### Process input data(padded)        
-        # bad_samples_idxs = find_long_samples(self.inputs, MAX_INPUT_LEN)
-        self.inputs = pad_truncate_brain_list(self.inputs, max_input_len)
-        # print('bad_samples', bad_samples_idxs)
-        # self.remove_bad_samples(bad_samples_idxs)
+        lens = [s.shape[0] for s in self.inputs]
 
-        print('len:', len(self))
-        print('max input len', max_input_len)
+        print('len of the dataset:', len(self))
+        print('max input len', np.max(lens))
+        print('median len', np.median(lens))
 
 
 
@@ -347,8 +344,8 @@ class BrainDataset(Dataset):
         input = self.inputs[idx].astype(np.float32)
 
         if self.transform is not None:
-            # transform input shape: [num_channels, time]
-            input = self.transform(input.T, sample_rate=50).T
+            # transform input shape: [time, num_channels] [height, width]
+            input = self.transform(image=input)['image']
 
         target = self.targets_tokens[idx]
         
