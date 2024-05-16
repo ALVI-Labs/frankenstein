@@ -1,0 +1,2 @@
+DATA_PATH=/mnt/beegfs/home/atimcenko/at_code/brain2text/data/
+PROJECT_PATH=/mnt/beegfs/home/atimcenko/at_code/brain2text/frankenstein
