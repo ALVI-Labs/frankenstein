@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 from einops import rearrange
 
-from .simple_mae_abs import Block
+from .blocks import Block
 from simple_parsing import Serializable
 from dataclasses import dataclass
 
@@ -107,7 +107,7 @@ class BrainBert(nn.Module):
         time_attn_mask = torch.repeat_interleave(time_attn_mask, self.config.n_electrodes, 0)
         time_attn_mask = time_attn_mask.unsqueeze(1) # b, 1, T, T
                 
-        indices_out = self.tokenizer.get_indices(x)       
+        indices_out = self.tokenizer.get_indices(x)
         indices = torch.clone(indices_out)
         
         if self.mask_ratio != 0.0:
