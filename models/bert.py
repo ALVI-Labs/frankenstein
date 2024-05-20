@@ -54,7 +54,8 @@ class BrainBert(nn.Module):
         
 
         self.spatial_pe = nn.Parameter(torch.randn(1, 1, config.n_electrodes, config.dim))
-        self.time_pe = nn.Parameter(torch.randn(1, config.window_size, 1, config.dim))
+        self.time_pe = nn.Parameter(torch.randn(1, config.window_size //self.tokenizer_downsample, 
+                                                1, config.dim))
 
         self.linear = nn.Linear(config.dim, codebook_size, bias=True)
         # self.attn_mask = torch.ones(config.block_size+self.n_registers, config.block_size+self.n_registers).to(torch.bool)
@@ -102,9 +103,7 @@ class BrainBert(nn.Module):
         # binary padded elements, downscale for tokenizers, get attn mask for time
         
         is_padded = (x == self.pad_value).all(dim=2)[:, ::self.tokenizer_downsample]
-
         time_attn_mask = ~is_padded.unsqueeze(1).repeat(1, is_padded.size(1), 1)
-        
         time_attn_mask = torch.repeat_interleave(time_attn_mask, self.config.n_electrodes, 0)
         time_attn_mask = time_attn_mask.unsqueeze(1) # b, 1, T, T
                 
@@ -114,8 +113,8 @@ class BrainBert(nn.Module):
         if self.mask_ratio != 0.0:
             indices = self.add_mask(indices)
 
-        print('indices_out', torch.max(indices_out))
-        print('indices', torch.max(indices))
+        # print('indices_out', torch.max(indices_out))
+        # print('indices', torch.max(indices))
         
         tokens = self.transformer.emb(indices)
         tokens = tokens + self.spatial_pe + self.time_pe
@@ -138,12 +137,10 @@ class BrainBert(nn.Module):
             y = self.linear(y)
             
             is_padded = is_padded.unsqueeze(-1).expand(-1, -1, self.config.n_electrodes)
-            
             # indices_out[indices!=self.MASK_ID] = -100 # masked only loss calculation
             indices_out[is_padded] = -100
             
             loss = F.cross_entropy(y.view(-1, y.size(-1)), indices_out.to(torch.long).view(-1))    
-
         if return_indices:
             return loss, y, indices
         return loss, y

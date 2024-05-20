@@ -232,7 +232,7 @@ class SoundStream(nn.Module):
         """
         self.D = len(levels)
         self.n_features = n_features
-        self.downsample = np.prod(stride_list)
+        self.downsample = int(np.prod(stride_list))
         self.encoder = Encoder(C=C, D=self.D, n_electrodes=n_features, stride_list=stride_list)
         self.decoder = Decoder(C=C, D=self.D, n_channels_out=n_features, stride_list=stride_list[::-1])
         
