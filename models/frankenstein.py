@@ -115,7 +115,6 @@ class Franky(nn.Module):
         Combine features from different channels into several vectors.
         x: b, t, c, d
         """
-        print(x.shape)
         b, t, c, d = x.size()
         x = rearrange(x, 'b t c d -> (b t) c d', b=b, t=t, c=self.n_electrodes, d=self.dim)
 
@@ -143,10 +142,7 @@ class Franky(nn.Module):
         # Also we have to add padded tokens here. and do not calculate metrics on them.
         # future_loss = F.mse_loss(pred_latent[:, :-self.combiner_config.n_registers], x[:, :-self.combiner_config.n_registers])
         
-        features = self.projector(x)
-        print('brain features shape', features.shape)
-        print('is_padded', is_padded.shape)
-        
+        features = self.projector(x)        
 
         # date_embedding = self.date_embeddings(date_info)
         # x = torch.cat([x, date_embedding], dim=-1)
