@@ -86,29 +86,52 @@ class Franky(nn.Module):
         self.block_size = int(self.window_size / self.brain_model.tokenizer.downsample * self.combiner_config.n_registers)
         self.dim = combiner_config.dim
         
+        # self.combiner_ln = RMSNorm(combiner_config.dim)
+        # self.combiner_pos_embeddings = nn.Parameter(torch.randn(1, self.n_electrodes, combiner_config.dim) / 0.02)
+        # self.combiner_model = nn.Sequential(*[Block(combiner_config) for _ in range(combiner_config.n_layers)])
         
-        self.combiner_model = nn.Sequential(*[Block(combiner_config) for _ in range(combiner_config.n_layers)])
-        
-        self.combiner_pos_embeddings = nn.Parameter(torch.randn(1, self.n_electrodes, combiner_config.dim))
         
         # Causal model
         # init new rope cache for working with several registers and overwriting old one
         # we have to repeat values, because n_registers have same time step
         causal_config.block_size = self.block_size
         
-        self.causal_model = CausalModel(causal_config)
-        self.causal_model.attn_mask = build_advanced_causal_mask(self.block_size, self.combiner_config.n_registers)
-        old_rope = self.causal_model.precompute_rope_cash
-        self.causal_model.precompute_rope_cash = old_rope.repeat_interleave(self.combiner_config.n_registers, dim=0)
+        # self.causal_model = CausalModel(causal_config)
+        # self.causal_model.attn_mask = build_advanced_causal_mask(self.block_size, self.combiner_config.n_registers)
+        # old_rope = self.causal_model.precompute_rope_cash
+        # self.causal_model.precompute_rope_cash = old_rope.repeat_interleave(self.combiner_config.n_registers, dim=0)
 
+        self.projector = nn.Linear(brain_model.config.dim, llm_model.config.n_embd, bias=True)
         
-        self.projector = nn.Linear(brain_model.config.dim, llm_model.config.n_embd)
-        
-
         self.date_embeddings = nn.Embedding(num_embeddings=25, embedding_dim=llm_model.config.n_embd)
-        
+
+
+        # self._init_weights(self.combiner_model)
+        # self._init_weights(self.causal_model)
+        self._init_weights(self.projector)
+        self._init_weights(self.date_embeddings)
+
         print("Full Franky: number of parameters: %.2fM" % (self.get_num_params()/1e6,))
 
+    def _init_weights(self, model, mean=0.0, std=0.02):
+        for module in model.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, mean=mean, std=std)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, mean=mean, std=std)
+    
+    # Применяем только к комбайнеру
+
+    # def _init_weights(self, module):
+
+    #     if isinstance(module, nn.Linear):
+    #         torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    #         if module.bias is not None:
+    #             torch.nn.init.zeros_(module.bias)
+    #     elif isinstance(module, nn.Embedding):
+    #         torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def combine_features(self, x):
         """
@@ -119,11 +142,12 @@ class Franky(nn.Module):
         x = rearrange(x, 'b t c d -> (b t) c d', b=b, t=t, c=self.n_electrodes, d=self.dim)
 
         x = x + self.combiner_pos_embeddings
-        tokens = self.combiner_model(x)
+        x = self.combiner_model(x)
 
-        tokens = tokens[:, :self.combiner_config.n_registers]
-        tokens = rearrange(tokens, '(b t) c d -> b (c t) d', b=b, t=t, c=self.combiner_config.n_registers, d=self.brain_model.dim)
-        return tokens 
+        x = x[:, :self.combiner_config.n_registers]
+        x = self.combiner_ln(x)
+        x = rearrange(x, '(b t) r d -> b (t r) d', b=b, t=t, r=self.combiner_config.n_registers, d=self.brain_model.dim)
+        return x 
     
     
     def forward(self, x, targets=None, date_info=None):
@@ -132,25 +156,33 @@ class Franky(nn.Module):
         x: B, T, C
         """
         is_padded = (x==0).all(dim=-1) # B, T
-        is_padded = is_padded[:, ::4]
+
+        # tmp = int(self.brain_model.tokenizer.downsample / self.combiner_config.n_registers)
+        tmp = int(self.brain_model.tokenizer.downsample)
+        is_padded = is_padded[:, ::tmp]
 
         _, x = self.brain_model(x) # b, t, c, d
 
-        x = self.combine_features(x)
-        pred_latent = self.causal_model(x)
+        latents = torch.mean(x, dim=2)
+        # x = self.combine_features(x)
+        # latents = self.causal_model(x)
 
         # Also we have to add padded tokens here. and do not calculate metrics on them.
         # future_loss = F.mse_loss(pred_latent[:, :-self.combiner_config.n_registers], x[:, :-self.combiner_config.n_registers])
         
-        features = self.projector(x)        
+        features = self.projector(latents)  
 
         # date_embedding = self.date_embeddings(date_info)
         # x = torch.cat([x, date_embedding], dim=-1)
         
         new_idx = targets.clone()
         new_idx[new_idx == -100] = self.tokenizer.eos_token_id
+        
 
-
+        # print('INPUT', new_idx[:, :-1])
+        # print('TARGETS', targets[:, 1:])
+        # print('~is_padded', ~is_padded, is_padded.shape)
+        
         outputs = self.llm_model(input_ids=new_idx[:, :-1], 
                                  labels=targets[:, 1:], 
                                  encoder_hidden_states=features, 
@@ -178,6 +210,8 @@ class Franky(nn.Module):
         pred = self.tokenizer.batch_decode(res)
         
         return pred
+
+    
     
 
     def get_num_params(self):
