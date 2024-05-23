@@ -159,8 +159,10 @@ def run_train_model(model, datasets, config, model_config):
 
             overall_step += 1
             accelerator.print('*', end = '')
-            accelerator.log({'train/loss': loss.item(), 
-                             'lr': lr}, step=overall_step)
+
+            train_loss_dict = {'train/' + key: value.item() for key, value in loss.items()}
+            train_loss_dict['lr'] = lr
+            accelerator.log(train_loss_dict, step=overall_step)
 
             if (overall_step % config.eval_interval) == 0 and accelerator.is_main_process:
                 model.eval()
@@ -172,12 +174,15 @@ def run_train_model(model, datasets, config, model_config):
                     val_loss_list.append(val_loss)
                 
                 ## printing 
-                mean_val_loss = torch.stack(val_loss_list).mean()
+                mean_val_loss_dict = {key: sum(d[key] for d in val_loss_list) / len(val_loss_list) for key in val_loss_list[0]}
+                mean_val_loss = mean_val_loss_dict['total_loss']
 
                 print('')
                 print(f"overall_steps {overall_step}: {loss.item()}")
                 print(f"val loss: {mean_val_loss}")
-                accelerator.log({'val/loss': mean_val_loss},step=overall_step)
+
+                val_loss_dict_to_log = {'val/' + key: value.item() for key, value in loss.items()}
+                accelerator.log(val_loss_dict_to_log, step=overall_step)
             
                 ## saving weights (if better)
                 if mean_val_loss < best_val_loss:
@@ -186,11 +191,6 @@ def run_train_model(model, datasets, config, model_config):
                     save_path = save_folder / f"step_{overall_step}_loss_{mean_val_loss:.4f}.safetensors"
                     safetensors.torch.save_model(model, save_path)
                     print('saved model: ', save_path.name)
-                                    
-                # ## Visualize 
-                # if config.visualize_predictions is True:
-                #     if accelerator.is_main_process:
-                #         visualize(model, val_loader)
                 
                 model.train()
             
