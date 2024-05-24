@@ -480,14 +480,15 @@ class WhisperAugmentDataset(Dataset):
 
     def augment(self, XV: np.ndarray, XS: np.ndarray, config: AugmentConfig) -> Tuple[np.ndarray, np.ndarray]:
 
-        # set if prior to everything so that 
+        # set if prior to everything so that    
+        do_augment = np.random.rand() <= config.total_augment_probability
         do_filter_augment = np.random.rand() <= config.no_filter_probability
-        # apply standart eval filter if not doing filter augmentation
-        if not do_filter_augment:
+
+        # apply standart eval filter if not doing filter augmentation or doing any augmentation
+        if not do_filter_augment or not do_augment:
             XV = self.eval_filter_fn(XV) if self.preprocess_config.filter_voltage else XV
             XS = self.eval_filter_fn(XS) if self.preprocess_config.filter_spikes else XS     
-
-        do_augment = np.random.rand() <= config.total_augment_probability
+        
         if not do_augment:
             return XV, XS, do_augment
 
