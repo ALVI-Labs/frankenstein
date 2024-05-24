@@ -39,6 +39,12 @@ class TrainConfig():
     visualize_predictions: bool = False
 
 
+def freeze_module(module):
+    for param in module.parameters():
+        param.requires_grad = False
+    return module
+    
+
 def load_model_weights(model, weights):
     try:
         safetensors.torch.load_model(model, weights)
@@ -136,12 +142,16 @@ def run_train_model(model, datasets, config, model_config):
 
     model, optimizer, train_loader, val_loader = accelerator.prepare(model, optimizer, train_loader, val_loader)
     
+    
     overall_step = 0
     best_val_loss = float('inf')
-
+    
     while True:
+        model.train()
         for batch in train_loader:
+            
             lr = scheduler(overall_step)
+            
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
             
@@ -151,20 +161,20 @@ def run_train_model(model, datasets, config, model_config):
                 inputs, labels, date_info = batch
 
                 loss, _ = model(inputs, labels, date_info=date_info)
-                accelerator.backward(loss)
+                accelerator.backward(loss['total_loss'])
                 
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(model.parameters(), config.grad_clip)
-                optimizer.step()
+                    ## logging
+                    overall_step += 1
+                    accelerator.print('*', end = '')
+                    train_loss_dict = {'train/' + key: value for key, value in loss.items()}
+                    train_loss_dict['lr'] = lr
+                    accelerator.log(train_loss_dict, step=overall_step)
+    
+                optimizer.step()          
 
-            overall_step += 1
-            accelerator.print('*', end = '')
-
-            train_loss_dict = {'train/' + key: value.item() for key, value in loss.items()}
-            train_loss_dict['lr'] = lr
-            accelerator.log(train_loss_dict, step=overall_step)
-
-            if (overall_step % config.eval_interval) == 0 and accelerator.is_main_process:
+            if ((overall_step+1) % config.eval_interval) == 0 and accelerator.is_main_process:
                 model.eval()
                 val_loss_list = []
                 for batch in val_loader:
@@ -175,14 +185,15 @@ def run_train_model(model, datasets, config, model_config):
                 
                 ## printing 
                 mean_val_loss_dict = {key: sum(d[key] for d in val_loss_list) / len(val_loss_list) for key in val_loss_list[0]}
-                mean_val_loss = mean_val_loss_dict['total_loss']
-
-                print('')
-                print(f"overall_steps {overall_step}: {loss.item()}")
-                print(f"val loss: {mean_val_loss}")
-
-                val_loss_dict_to_log = {'val/' + key: value.item() for key, value in loss.items()}
+                
+                val_loss_dict_to_log = {'val/' + key: value.item() for key, value in mean_val_loss_dict.items()}
                 accelerator.log(val_loss_dict_to_log, step=overall_step)
+                
+
+                mean_val_loss = mean_val_loss_dict['total_loss'].item()
+                print('')
+                print(f"overall_steps {overall_step}: {loss['total_loss'].item()}")
+                print(f"val loss: {mean_val_loss}")
             
                 ## saving weights (if better)
                 if mean_val_loss < best_val_loss:

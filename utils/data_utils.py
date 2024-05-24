@@ -282,15 +282,17 @@ def get_tokenizer(tokenizer):
 
 def pad_token_list(token_list, max_tokens):
     num_padding = max_tokens - len(token_list)
-    if num_padding > 0:
+    if num_padding >= 0:
         token_list.extend([-100] * num_padding)
+    else:
+        token_list = token_list[:num_padding]
     return token_list
 
 def remove_padding(token_list):
     return [token for token in token_list if token != -100]
 
 class BrainDataset(Dataset):
-    def __init__(self, path, tokenize_function=None, transform=None): 
+    def __init__(self, path, tokenize_function=None, transform=None, max_tokens=25): 
         print('Runed processing of the ', path)
 
         data = process_all_files(path)
@@ -301,26 +303,23 @@ class BrainDataset(Dataset):
 
         self.date_to_index = DATE_TO_INDEX
         self.transform = transform
+        self.max_tokens = max_tokens
         
 
-        ### Process text data(padded) 
+        ### Process texts
         self.targets_tokens = []
 
         if tokenize_function is not None:
-            for text in self.targets:
-                tokens = tokenize_function(text)
-                tokens_padded = pad_token_list(tokens, MAX_TOKENS)
-                tokens_padded = np.asarray(tokens_padded, dtype=np.int64)
-                self.targets_tokens.append(tokens_padded)
+            self.targets_tokens = [tokenize_function(txt) for txt in self.targets]
         else:
             self.targets_tokens = self.targets[:]
 
-        lens = [s.shape[0] for s in self.inputs]
+        lens = [len(s) for s in self.inputs]
+        lens_txt = [len(s) for s in self.targets_tokens]
 
         print('len of the dataset:', len(self))
-        print('max input len', np.max(lens))
-        print('median len', np.median(lens))
-
+        print(f'max signal size: {np.max(lens)} | max tokens size: {np.max(lens_txt)}')
+        print(f'median signal size: {np.median(lens)} | median tokens size: {np.median(lens_txt)}')
 
 
     def __len__(self) -> int:
@@ -340,7 +339,6 @@ class BrainDataset(Dataset):
             target: [n_tokens]
             date_info: 1
         """
-        
         input = self.inputs[idx].astype(np.float32)
 
         if self.transform is not None:
@@ -348,6 +346,9 @@ class BrainDataset(Dataset):
             input = self.transform(image=input)['image']
 
         target = self.targets_tokens[idx]
+
+        target = pad_token_list(target, self.max_tokens)
+        target = np.asarray(target, dtype=np.int64)
         
         date = self.date[idx]
         date_idx = self.date_to_index[date]
