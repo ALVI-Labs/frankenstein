@@ -14,17 +14,17 @@ from dataclasses import dataclass
 @dataclass
 class MirasolConfig(Serializable):
     # data params
-    window_size: int = 128
+    window_size: int = 512
     n_electrodes: int = 256
-    mask_ratio: float = 0.75
+    mask_ratio: float = 0.0
 
     n_registers: int = 4
 
-    n_layers: int = 4
-    dim: int = 64
-    hidden_dim: int = 512
+    n_layers: int = 8
+    dim: int = 512
+    hidden_dim: int = 2048
 
-    head_dim: int = 16
+    head_dim: int = 32
     n_heads: int = 16
     n_kv_heads: int = 16 # now it should be the same with n_heads.
 
@@ -32,31 +32,34 @@ class MirasolConfig(Serializable):
     rope_theta: float = 10000.0
 
     w_latent_loss: float = 1.0
-    w_recon_loss: float = 1.0
+    w_recon_loss: float = 0.1
 
 class CausalModel(nn.Module):
     """
     Apply causal attention with RoPE and Attention mask. Same rope for N tokens per time step.
     """
-    def __init__(self, config, num_tokens_per_time=1, block_size=256):
+    def __init__(self, config, block_size, num_tokens_per_time=1):
         super().__init__()
         self.config = config
+        self.block_size = block_size
 
         self.transformer = nn.ModuleDict(dict(
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layers)]),
-            ln_f = RMSNorm(config.dim),
+            # ln_f = RMSNorm(config.dim),
         ))
 
         # for default causal forward generation
         rope = build_complex_rope_cache(dim=self.config.head_dim,
-                                        seq_len=block_size / 2,
+                                        seq_len=block_size / num_tokens_per_time,
                                         theta=config.rope_theta)
-        
+
         self.precompute_rope_cash = rope.repeat_interleave(num_tokens_per_time, dim=0)
-        
         self.attn_mask = build_advanced_causal_mask(block_size=block_size, tok_per_time=num_tokens_per_time)
+
         print('Shape of the rope cache: ', self.precompute_rope_cash.shape)
+        print('Shape of the causal model: ', self.attn_mask.shape)
+
 
 
     def forward(self, x, attn_mask=None, rope_cache=None):
@@ -64,6 +67,8 @@ class CausalModel(nn.Module):
         myo signals with shape: with shape [B, T, C]
         """
         attn_mask = self.attn_mask if attn_mask is None else attn_mask
+        attn_mask = attn_mask.to(x.device)
+        
         rope_cache = self.rope_cache if rope_cache is None else rope_cache
 
         # embedding
@@ -72,7 +77,7 @@ class CausalModel(nn.Module):
         for block in self.transformer.h:
             x = block(x, attn_mask=attn_mask, rope=rope_cache)
 
-        x = self.transformer.ln_f(x)
+        # x = self.transformer.ln_f(x)
         return x
     
     @property
@@ -99,17 +104,17 @@ class Combiner(nn.Module):
         self.config = config
         self.n_registers = config.n_registers
 
-        self.pe =  nn.Parameter(torch.randn(1, config.n_electrodes, config.dim) / 0.02)
+        self.pe = nn.Parameter(torch.randn(1, config.n_electrodes, config.dim))
         
         self.transformer = nn.ModuleDict(dict(
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layers)]),
-            ln_f = RMSNorm(config.dim),
+            # ln_f = RMSNorm(config.dim),
         ))
 
     def forward(self, x, attn_mask=None, rope_cache=None):
         """
-        myo signals with shape: with shape [B, T, C]
+        myo signals with shape: with shape [B, C, D]
         """
 
         x = x + self.pe
@@ -117,12 +122,9 @@ class Combiner(nn.Module):
         # embedding
         
         for block in self.transformer.h:
-            x = block(x, attn_mask=attn_mask, rope=rope_cache)
-
-        x = self.transformer.ln_f(x)
-        x = x[:, :self.n_registers]
-
-        return x
+            x = block(x)
+        
+        return x[:, :self.n_registers]
     
     @property
     def dtype(self) -> torch.dtype:
@@ -134,15 +136,14 @@ class Combiner(nn.Module):
     
 class Reconstructor(nn.Module):
     """
-    Apply causal attention with RoPE and Attention mask. Same rope for N tokens per time step.
     """
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.n_registers = config.n_registers
 
-        self.cls_tokens = nn.Parameter(torch.randn(1, config.n_electrodes, config.dim) / 0.02)
-        self.pe = nn.Parameter(torch.randn(1, config.n_electrodes + config.n_registers, config.dim) / 0.02)
+        self.cls_tokens = nn.Parameter(torch.randn(1, config.n_electrodes, config.dim))
+        self.pe = nn.Parameter(torch.randn(1, config.n_electrodes + config.n_registers, config.dim))
         
         self.transformer = nn.ModuleDict(dict(
             h = nn.ModuleList([Block(config) for _ in range(config.n_layers)]),
@@ -162,8 +163,7 @@ class Reconstructor(nn.Module):
             x = block(x, attn_mask=attn_mask, rope=rope_cache)
 
         x = self.transformer.ln_f(x)
-        x = x[:, :self.config.n_electrodes]
-        return x
+        return x[:, :self.config.n_electrodes]
     
     @property
     def dtype(self) -> torch.dtype:
@@ -184,11 +184,9 @@ class Mirasol(nn.Module):
         self.window_size= config.window_size
         self.block_size = self.get_block_size()
 
-
-
         self.emb = nn.Embedding(vq_model.codebook_size, config.dim)
         self.combiner = Combiner(config)
-        self.causal = CausalModel(config, num_tokens_per_time=config.n_registers, block_size=self.block_size)
+        self.causal = CausalModel(config, block_size=self.block_size, num_tokens_per_time=config.n_registers )
         self.reconstructor = Reconstructor(config)
         self.linear_to_indices = nn.Linear(config.dim, vq_model.codebook_size)
         
@@ -202,10 +200,11 @@ class Mirasol(nn.Module):
         block_size = self.config.window_size / self.vq_model.downsample * self.config.n_registers
         block_size = int(block_size)
         return block_size
+    
     def cosine_loss(self, x, y, is_padded):
         valid_mask = ~is_padded
 
-        cosine_sim = F.cosine_similarity(x, y, dim=-1)
+        cosine_sim = F.cosine_similarity(x, y, dim=-1, eps=1e-06)
         cosine_sim = (cosine_sim * valid_mask).sum() / valid_mask.sum()
         
         cosine_loss = 1 - cosine_sim
@@ -240,8 +239,8 @@ class Mirasol(nn.Module):
         2. calculate loss only on non padded tokens
         3. non padded on reconstructor
 
-        
-        VQ VAE: B, T, C -> B, T/8, C
+        t = T/8
+        VQ VAE: B, T, C -> B, t, C
         Emb: B, t, C -> B, t, C, D
         Combiner: (B t), C, D -> (B t), M, D
         Causal: B, (t M) , D -> B, (t M) - 1 , D
@@ -254,8 +253,10 @@ class Mirasol(nn.Module):
         is_padded = self.adjust_pad_mask(is_padded, scale_factor=scale_factor)
 
         indices_out = self.vq_model.get_indices(x)
-        tokens = self.emb(indices_out)
-
+        indices = torch.clone(indices_out)
+        
+        tokens = self.emb(indices)
+        
         b, t, c, d = tokens.size()
 
         tokens = rearrange(tokens, 'b t c d -> (b t) c d', b=b, t=t, c=self.config.n_electrodes, d=self.config.dim)
@@ -264,7 +265,7 @@ class Mirasol(nn.Module):
 
         tokens = rearrange(tokens, '(b t) r d -> b (t r) d', b=b, t=t, r=self.config.n_registers, d=self.config.dim)
     
-        latents = self.causal(tokens) # b (t r) d
+        latents = self.causal(tokens) # b (t r) d -> b (t r) d
 
         latent_loss = self.cosine_loss(latents[:, :-self.config.n_registers], 
                                        tokens[:, self.config.n_registers:], 
@@ -273,13 +274,15 @@ class Mirasol(nn.Module):
         # here we're working with latents
         recon_loss = 0 
         if self.w_recon_loss > 0:
-            latents_to_recon = rearrange(latents, ' b (t r) d -> (b t) r d', b=b, t=t, r=self.config.n_registers, d=self.config.dim)
+            latents_to_recon = rearrange(latents, ' b (t r) d -> (b t) r d', 
+                                         b=b, t=t, r=self.config.n_registers, d=self.config.dim)
 
             x = self.reconstructor(latents_to_recon) # (b t) r d -> (b t) c d 
             
             preds = self.linear_to_indices(x) # (b t) c d -> (b t) c codebook_size
 
-            preds = rearrange(preds, '(b t) c e -> b t c e', b=b, t=t, c=self.config.n_electrodes, e=self.vq_model.codebook_size)
+            preds = rearrange(preds, '(b t) c e -> b t c e', b=b, t=t, 
+                              c=self.config.n_electrodes, e=self.vq_model.codebook_size)
 
             is_padded_idxs = is_padded[:, ::self.config.n_registers]
             indices_out[is_padded_idxs] = -100
@@ -287,7 +290,7 @@ class Mirasol(nn.Module):
             recon_loss = F.cross_entropy(preds[:, :-1].reshape(-1, preds.size(-1)), 
                                         indices_out[:, 1:].reshape(-1).to(torch.long))
 
-        latents = latents[:, self.config.n_registers:]
+        latents = latents[:, :-self.config.n_registers]
 
         losses_dict = {'total_loss': self.w_latent_loss * latent_loss + self.w_recon_loss * recon_loss, 
                       'latent_loss': latent_loss,
@@ -295,7 +298,7 @@ class Mirasol(nn.Module):
 
 
         if return_paddings:
-            return losses_dict, latents, is_padded[:, self.config.n_registers:]
+            return losses_dict, latents, is_padded[:, :-self.config.n_registers]
 
         return losses_dict, latents
 
@@ -343,7 +346,7 @@ class Franky(nn.Module):
         self.tokenizer = llm_model['tokenizer']
 
         n_embd_decoder = self.llm_decoder.config.d_model
-        self.projector = nn.Linear(brain_model.config.dim, n_embd_decoder, bias=True)
+        self.projector = nn.Linear(brain_model.config.dim, n_embd_decoder, bias=False)
 
         self.date_embeddings = nn.Embedding(num_embeddings=25, embedding_dim=n_embd_decoder)
 
@@ -377,17 +380,16 @@ class Franky(nn.Module):
         # date_embedding = self.date_embeddings(date_info)
         # x = torch.cat([x, date_embedding], dim=-1)
         
-        new_idx = targets.clone()
-        new_idx[new_idx == -100] = self.tokenizer.eos_token_id
+        input_ids = targets.clone()
+        input_ids[input_ids == -100] = self.tokenizer.eos_token_id
         
-        logits= self.llm_decoder(input_ids=new_idx,
-                                 encoder_hidden_states=features)['last_hidden_state']
+        logits= self.llm_decoder(input_ids=input_ids, encoder_hidden_states=features)['last_hidden_state']
         logits = self.proj_out(logits)
-        txt_loss = F.cross_entropy(logits[:, :-1].view(-1, logits.size(-1)),
-                                   new_idx[:, 1:].view(-1))
+        txt_loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
+                                   targets[:, 1:].view(-1))
         
-
-        losses['total_loss'] = losses['total_loss'] + self.w_txt_loss * txt_loss
+        total_loss = losses['total_loss'] + self.w_txt_loss * txt_loss
+        losses['total_loss'] = total_loss
         losses['txt_loss'] = txt_loss
 
         return losses, logits

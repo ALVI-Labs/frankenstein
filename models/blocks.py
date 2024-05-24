@@ -22,6 +22,7 @@ def build_advanced_causal_mask(block_size, tok_per_time):
     
     causal_mask = mask
     causal_mask = causal_mask.to(torch.bool)
+    causal_mask.requires_grad=False
     return causal_mask
 
 
