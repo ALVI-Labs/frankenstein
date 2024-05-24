@@ -17,7 +17,7 @@ class EncoderConfig(Serializable):
     patch_size: int = 4
 
     n_layers: int = 12
-    dim: int = 256
+    dim: int = 512
     hidden_dim: int = 1024
 
     head_dim: int = 32
@@ -26,7 +26,7 @@ class EncoderConfig(Serializable):
 
 @dataclass
 class MAEConfig(Serializable):
-    masking_ratio: float = 0.5
+    masking_ratio: float = 0.75
 
     # data params
     n_layers: int = 6
@@ -134,7 +134,7 @@ class MAE(nn.Module):
         self.mask_token = nn.Parameter(torch.randn(mae_config.dim))
         self.decoder_pos_emb = nn.Parameter(torch.randn(1, self.encoder.block_size + 1, mae_config.dim))
         self.proj_to_signals = nn.Linear(mae_config.dim, encoder_config.patch_size)
-
+        print(mae_config)
         print("MAE: number of parameters: %.2fM" % (self.get_num_params()/1e6))
 
     def get_num_params(self, non_embedding=True):
@@ -188,9 +188,13 @@ class MAE(nn.Module):
         cls_token = unmasked_decoder_tokens[:, :1]
         data_tokens = unmasked_decoder_tokens[:, 1:]
 
-        decoder_tokens = torch.zeros(b, self.encoder.block_size, self.dim, device=x.device)
+        decoder_tokens = torch.zeros(b, self.encoder.block_size, self.dim, device=x.device, dtype=data_tokens.dtype)
+        # print('decoder_tokens' , decoder_tokens.dtype)
+        # print('data_tokens', data_tokens.dtype)
+        # print('self.mask_token', self.mask_token.dtype)
+        
         decoder_tokens[batch_range, unmasked_indices] = data_tokens
-        decoder_tokens[batch_range, masked_indices] = self.mask_token
+        decoder_tokens[batch_range, masked_indices] = self.mask_token.to(data_tokens.dtype)
 
         decoder_tokens = torch.cat([cls_token, decoder_tokens], axis=1)
         decoder_tokens = decoder_tokens + self.decoder_pos_emb
@@ -210,18 +214,21 @@ class MAE(nn.Module):
         tokens_real_masked = patches[batch_range, masked_indices]
 
         loss = F.mse_loss(tokens_pred_masked, tokens_real_masked)
-            
+
+        losses = {'total_loss': loss}
+        
         if return_preds:
             binary_mask = torch.zeros_like(x, device=x.device, dtype=x.dtype) 
             binary_mask[batch_range, masked_indices] = 1
 
             reconstruction_signal = torch.zeros_like(x, device=x.device, dtype=x.dtype)
+            
             reconstruction_signal[batch_range, masked_indices] = pred_tokens[batch_range, masked_indices]
             reconstruction_signal[batch_range, unmasked_indices] = x[batch_range, unmasked_indices]
 
-            return loss, reconstruction_signal, binary_mask
+            return losses, reconstruction_signal, binary_mask
 
-        return loss, None
+        return losses, None
 
     @property
     def dtype(self) -> torch.dtype:

@@ -351,7 +351,7 @@ class BrainDataset(Dataset):
         target = np.asarray(target, dtype=np.int64)
         
         date = self.date[idx]
-        date_idx = self.date_to_index[date]
+        date_idx = np.array([self.date_to_index[date]])
                 
         return input, target, date_idx
     
