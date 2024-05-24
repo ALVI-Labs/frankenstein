@@ -456,9 +456,11 @@ class WhisperAugmentDataset(Dataset):
         XS = self.XS_list[idx].copy()
 
         if not self.is_eval:
-            XV, XS = self.augment(XV, XS, self.augment_config)
+            XV, XS, do_augment = self.augment(XV, XS, self.augment_config)
+        else:
+            do_augment = False
 
-        XV, XS = self.pad_shift(XV, XS, self.augment_config)
+        XV, XS = self.pad_shift(XV, XS, do_augment, self.augment_config)
 
         # Stack voltage and spike data
         which_stack = self.preprocess_config.inputs_stack
@@ -484,9 +486,10 @@ class WhisperAugmentDataset(Dataset):
         if not do_filter_augment:
             XV = self.eval_filter_fn(XV) if self.preprocess_config.filter_voltage else XV
             XS = self.eval_filter_fn(XS) if self.preprocess_config.filter_spikes else XS     
-             
-        if np.random.rand() > config.total_augment_probability:
-            return XV, XS
+
+        do_augment = np.random.rand() <= config.total_augment_probability
+        if not do_augment:
+            return XV, XS, do_augment
 
         # Filter noise
         if do_filter_augment:
@@ -528,10 +531,10 @@ class WhisperAugmentDataset(Dataset):
             XV[:, start_idx:start_idx + mask_length] = 0
             XS[:, start_idx:start_idx + mask_length] = -1
 
-        return XV, XS
+        return XV, XS, do_augment
 
 
-    def pad_shift(self, XV: np.ndarray, XS: np.ndarray, config: AugmentConfig) -> Tuple[np.ndarray, np.ndarray]:
+    def pad_shift(self, XV: np.ndarray, XS: np.ndarray, do_augment: bool, config: AugmentConfig) -> Tuple[np.ndarray, np.ndarray]:
         n_samples = XV.shape[1]
 
         # Pad to max duration (any case)
@@ -539,7 +542,7 @@ class WhisperAugmentDataset(Dataset):
         XS = np.pad(XS, [(0, 0), (0, max(0, self.max_samples - n_samples))], mode='constant')    
         
         # Random signal shift if train and coin flip
-        if not self.is_eval and np.random.rand() < config.random_signal_shift_probability:
+        if not self.is_eval and do_augment and np.random.rand() < config.random_signal_shift_probability:
             shift_length = np.random.randint(self.max_samples - n_samples)
             XV = np.roll(XV, shift_length, axis=1)
             XS = np.roll(XS, shift_length, axis=1)
