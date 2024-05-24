@@ -276,27 +276,36 @@ def configure_learnable_layers(model, config: ModelAdaptationConfig):
     if config.adapt_model == "freeze":
         if "conv" in config.freeze_modules:
             print("Freezing full model conv layers...")
+            
             for pn, p in model.model.encoder.conv1.named_parameters():
                 p.requires_grad = False
             for pn, p in model.model.encoder.conv2.named_parameters():
                 p.requires_grad = False
+                
         if "encoder" in config.freeze_modules:
-            print("Freezing full model encoder layers...")
+            print("Freezing full model encoder layers except conv...")
+            
             for pn, p in model.model.encoder.named_parameters():
                 if "conv" not in pn:
                     p.requires_grad = False
-        if "adapter" in config.freeze_modules:
+                    
+        if "adapter" in config.freeze_modules: 
             print("Freezing full model adapter layers...")
+            
             for pn, p in model.model.decoder.named_parameters():
                 if "encoder" in pn:
                     p.requires_grad = False
+                    
         if "decoder" in config.freeze_modules:
             print("Freezing full model decoder layers...")
+            
             for pn, p in model.model.decoder.named_parameters():
                 if "encoder" not in pn:
                     p.requires_grad = False
+                    
         if "sanyafreeze" in config.freeze_modules:
-            print("Freezing embed and proj_out layers")
+            print("Freezing embed and proj_out layers (sanyafreeze)...")
+            
             for param in model.model.decoder.embed_tokens.parameters():
                 param.requires_grad = False
             
@@ -314,12 +323,17 @@ def configure_learnable_layers(model, config: ModelAdaptationConfig):
         lora_config = config.lora_config
         lora_config.target_modules = config.low_rank_adaptation_targets
         print(lora_config)
+        
         if "encoder" in config.low_rank_adaptation_modules:
             print("Putting LORA on encoder...")
             model.model.encoder = LoraModel(model.model.encoder, lora_config, "default")
+            
         if "decoder" in config.low_rank_adaptation_modules:
             print("Putting LORA on decoder...")
             model.model.decoder = LoraModel(model.model.decoder, lora_config, "default")
+
+        if "full" in config.low_rank_adaptation_modules:
+            model.model = LoraModel(model.model, lora_config, "default")
         
         print("\nParameters after LORA: ")
         count_parameters(model)
