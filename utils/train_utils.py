@@ -199,6 +199,103 @@ def run_train_model(model, datasets, config, model_config):
                 print('Complete training')
                 break
 
+def run_train_whisper(model, datasets, config, model_config=None):
+    set_seed(42)
+
+    mp = 'fp16' if config.mixed_precision else 'no'
+    accelerator = Accelerator(mixed_precision=mp, 
+                                gradient_accumulation_steps=config.grad_accum, 
+                                device_placement=True, 
+                                split_batches=True, 
+                                log_with ='wandb')
+    accelerator.init_trackers(
+                project_name=config.project_name, 
+                config={**config.__dict__}
+                # config={**config.__dict__, **model_config.__dict__}, 
+                init_kwargs={"wandb":{"name":config.exp_name}})
+
+    print('Device for training: ', accelerator.device)
+    print('Num devices: ', accelerator.num_processes)
+
+    save_folder = config.save_folder / config.project_name / config.exp_name
+    save_folder.mkdir(parents=True, exist_ok=True)
+
+    ## Prepare data, optimizer and scheduler
+
+    train_dataset, val_dataset = datasets
+    train_loader, val_loader = prepare_data_loaders(train_dataset, val_dataset, config)
+
+    optimizer = torch.optim.AdamW(model.parameters(), 
+                                  lr=config.learning_rate, 
+                                  weight_decay=config.weight_decay)
+    scheduler = init_lr_scheduler(config)
+
+    model, optimizer, train_loader, val_loader = accelerator.prepare(model, optimizer, train_loader, val_loader)
+    
+    overall_step = 0
+    best_val_loss = float('inf')
+
+    while True:
+        for batch in train_loader:
+            lr = scheduler(overall_step)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+            
+            with accelerator.accumulate(model):
+                optimizer.zero_grad(set_to_none=True)
+                
+                inputs, labels, date_info = batch
+
+                loss, _ = model(inputs, labels, date_info=date_info)
+                accelerator.backward(loss)
+                
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(model.parameters(), config.grad_clip)
+                optimizer.step()
+
+            overall_step += 1
+            accelerator.print('*', end = '')
+            accelerator.log({'train/loss': loss.item(), 
+                             'lr': lr}, step=overall_step)
+
+            if (overall_step % config.eval_interval) == 0 and accelerator.is_main_process:
+                model.eval()
+                val_loss_list = []
+                for batch in val_loader:
+                    inputs, labels, date_info = batch
+                    with torch.no_grad():
+                        val_loss, _ = model(inputs, labels, date_info)
+                    val_loss_list.append(val_loss)
+                
+                ## printing 
+                mean_val_loss = torch.stack(val_loss_list).mean()
+
+                print('')
+                print(f"overall_steps {overall_step}: {loss.item()}")
+                print(f"val loss: {mean_val_loss}")
+                accelerator.log({'val/loss': mean_val_loss},step=overall_step)
+            
+                ## saving weights (if better)
+                if mean_val_loss < best_val_loss:
+                    best_val_loss = mean_val_loss
+                
+                    save_path = save_folder / f"step_{overall_step}_loss_{mean_val_loss:.4f}.safetensors"
+                    safetensors.torch.save_model(model, save_path)
+                    print('saved model: ', save_path.name)
+                                    
+                # ## Visualize 
+                # if config.visualize_predictions is True:
+                #     if accelerator.is_main_process:
+                #         visualize(model, val_loader)
+                
+                model.train()
+            
+            if overall_step > config.max_steps:
+                accelerator.end_training()
+                print('Complete training')
+                break
+
+
 
 
 def simple_train_model(model, datasets, config, project_name='transformer'):

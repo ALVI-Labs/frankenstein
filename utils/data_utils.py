@@ -290,7 +290,7 @@ def remove_padding(token_list):
     return [token for token in token_list if token != -100]
 
 class BrainDataset(Dataset):
-    def __init__(self, path, tokenize_function=None, transform=None): 
+    def __init__(self, path, tokenize_function=None, transform=None, max_tokens=25): 
         print('Runed processing of the ', path)
 
         data = process_all_files(path)
@@ -309,7 +309,7 @@ class BrainDataset(Dataset):
         if tokenize_function is not None:
             for text in self.targets:
                 tokens = tokenize_function(text)
-                tokens_padded = pad_token_list(tokens, MAX_TOKENS)
+                tokens_padded = pad_token_list(tokens, max_tokens)
                 tokens_padded = np.asarray(tokens_padded, dtype=np.int64)
                 self.targets_tokens.append(tokens_padded)
         else:
