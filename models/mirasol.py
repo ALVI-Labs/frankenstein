@@ -386,7 +386,7 @@ class Franky(nn.Module):
         logits= self.llm_decoder(input_ids=input_ids, encoder_hidden_states=features)['last_hidden_state']
         logits = self.proj_out(logits)
         txt_loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
-                                   targets[:, 1:].view(-1))
+                                   targets[:, 1:].reshape(-1), ignore_index=-100)
         
         total_loss = losses['total_loss'] + self.w_txt_loss * txt_loss
         losses['total_loss'] = total_loss

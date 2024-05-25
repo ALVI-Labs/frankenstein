@@ -230,6 +230,7 @@ class SoundStream(nn.Module):
         vec_emb - [16] * 8 
         codebook - [16] * 2048
         """
+        self.C = C
         self.D = len(levels)
         self.n_features = n_features
         self.downsample = int(np.prod(stride_list))
@@ -251,7 +252,7 @@ class SoundStream(nn.Module):
             o: is tensor with shape (batch, Time, Channels)
         """
         
-        x = rearrange(x, 'b t (c f) -> (b c) f t', c=256, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
+        x = rearrange(x, 'b t (c f) -> (b c) f t', c=self.C, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
         
         e = self.encoder(x)
         # reshaping for quantization
@@ -261,7 +262,7 @@ class SoundStream(nn.Module):
         total_loss = F.l1_loss(o, x) 
         # total_loss = self.custom_l1_loss(o, x)
         if return_preds:
-            o = rearrange(o, '(b c) f t -> b t (c f)', c=256, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
+            o = rearrange(o, '(b c) f t -> b t (c f)', c=self.C, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
             return total_loss, o
         else:
             return total_loss, None
