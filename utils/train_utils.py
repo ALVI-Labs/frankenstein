@@ -143,7 +143,8 @@ def run_train_model(model, datasets, config, model_config):
     model, optimizer, train_loader, val_loader = accelerator.prepare(model, optimizer, train_loader, val_loader)
     
     
-    overall_step = 0
+    overall_step = 1
+    last_val_step = 1
     best_val_loss = float('inf')
     
     while True:
@@ -173,8 +174,11 @@ def run_train_model(model, datasets, config, model_config):
                     accelerator.log(train_loss_dict, step=overall_step)
     
                 optimizer.step()          
-
-            if ((overall_step+1) % config.eval_interval) == 0 and accelerator.is_main_process:
+            
+            if ((overall_step) % config.eval_interval) == 0 and accelerator.is_main_process:
+                if last_val_step == overall_step:
+                    continue
+                
                 model.eval()
                 val_loss_list = []
                 for batch in val_loader:
@@ -182,6 +186,8 @@ def run_train_model(model, datasets, config, model_config):
                     with torch.no_grad():
                         val_loss, _ = model(inputs, labels, date_info)
                     val_loss_list.append(val_loss)
+
+                last_val_step = overall_step
                 
                 ## printing 
                 mean_val_loss_dict = {key: sum(d[key] for d in val_loss_list) / len(val_loss_list) for key in val_loss_list[0]}
