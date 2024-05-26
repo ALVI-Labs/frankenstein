@@ -7,7 +7,10 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from collections import defaultdict
 from torch.utils.data import Dataset
-
+import string
+import gc
+from tqdm import tqdm
+from einops import pack, unpack
 
 MAX_INPUT_LEN = 768 # 768
 MAX_TOKENS = 25
@@ -37,10 +40,123 @@ DATE_TO_INDEX = {'t12.2022.04.28': 0,
                 't12.2022.08.23': 22,
                 't12.2022.08.25': 23}
 
-import string
+### NEW PREPROC WHICH AGGREGATE ALL FEATURES
+### ------------- ###
+
+
+def process_all_files(path, process_file):
+    data = {'brain_list':[], 'sentence_list':[], 'date_list':[]}
+    data_files = sorted(path.glob('*.mat'))
+    
+    for data_file in tqdm(data_files, desc="Processing files", unit="file"):
+        brains, sentences, dates = process_file(data_file)
+        data['brain_list'].extend(brains)
+        data['sentence_list'].extend(sentences)
+        data['date_list'].extend(dates)
+        gc.collect()
+
+    return data
+
+
+def process_file_v2(data_file):
+    """
+    Process files and get annotation.
+
+    Process all features and return concatenated features actoss channel space.
+    
+    For voltage: clip outliezr and then min max per data sample
+    for spikes: no clipping, just minmax for data_sample.
+    """
+    data = scipy.io.loadmat(data_file)
+    date = data_file.stem
+
+
+    block_list   = data['blockIdx'][:, 0]
+    sentence_list = data['sentenceText']
+
+    voltage_list = data['spikePow'][0]
+    # spikes_list = [data['tx1'][0], data['tx2'][0], data['tx3'][0], data['tx4'][0]]
+    spikes_list = [data['tx1'][0], data['tx2'][0], data['tx3'][0]]
+
+    n_trials = len(block_list)
+    
+    voltage_list = [robust_min_max_per_block(voltage_list, block_list, apply_clip=True)]
+    spikes_list = [robust_min_max_per_block(signal, block_list, apply_clip=False) for signal in spikes_list]
+
+    normalized_signal_list = voltage_list + spikes_list
+    
+    brain_list = [None] * n_trials
+    
+    for idx in range(n_trials):
+        brain_list[idx] = np.concatenate([signal[idx] for signal in normalized_signal_list], axis=1)
+    
+    sentence_list = process_text(sentence_list)
+    date_list = [date] * n_trials
+
+    # delete unnecessary files
+    del data, voltage_list, spikes_list, normalized_signal_list
+    
+    return brain_list, sentence_list, date_list
+
+def robust_min_max_per_block(signal_list, block_list, apply_clip=True, normalize_per_channel=False):
+    """
+    Preprocess voltages / spike counts based on the
+    block-consistent features: min max scaling
+    """    
+    signal_list = np.array(signal_list, dtype='object')
+    block_list = np.array(block_list)
+    
+    unique_blocks = np.unique(block_list)
+    signal_processed = np.empty(len(block_list), dtype=object)
+
+    for block in unique_blocks:
+        trial_mask = block_list == block
+
+        # concat all data per block, clip and minmax scale
+        x, shapes = pack(signal_list[trial_mask], '* c')
+        if apply_clip:
+            lows, ups = get_low_upper_values(x)
+            x = np.clip(x, lows, ups)
+        x = normalize_data(x, normalize_per_channel=normalize_per_channel)
+
+        # unpack and save
+        signal_processed[trial_mask] = unpack(x, shapes, '* c')
+
+    del signal_list, block_list, x
+    
+    return signal_processed
+
+
+def get_low_upper_values(x):
+    """
+    s - (T, C) shapes
+    """
+    Q1 = np.percentile(x, 25, axis=0)
+    Q2 = np.percentile(x, 50, axis=0) 
+    Q3 = np.percentile(x, 75, axis=0)
+    
+    IQR = Q3 - Q1
+    
+    low_lim = Q1 - 2 * IQR
+    up_lim = Q3 + 2 * IQR
+    
+    return low_lim, up_lim
+
+def normalize_data(x, normalize_per_channel):
+    """
+    x - Time, Channels
+    """
+    if normalize_per_channel:
+        x_min, x_max = x.min(0), x.max(0)
+    else:
+        x_min, x_max = x.min(), x.max()
+    interval = np.where((x_max - x_min) == 0, 1, x_max - x_min)
+    x  = (x - x_min) / interval
+    return x
 
 
 
+# ---------------------------# 
 
 def min_max_per_block_scaling(brain_list, idx_list):
     """
@@ -74,44 +190,6 @@ def min_max_per_block_scaling(brain_list, idx_list):
     # Scale each brain data array using the corresponding block scaler
     scaled_brain_list = [scalers[idx].transform(brain) for brain, idx in zip(brain_list, idx_list)]
     return scaled_brain_list
-
-
-def z_score_per_block_scaling(brain_list, idx_list):
-    """
-    Perform block-specific scaling on the input brain data.
-
-    Args:
-        brain_list (list): List of brain data arrays, each with shape [Time, 256].
-        idx_list (list): List of block indices corresponding to each brain data array.
-
-    Returns:
-        list: List of scaled brain data arrays.
-
-    # brain_list = [submit_dataset[i][0] for i in range(4)]
-    # idx_list = [0, 0, 100, 100]
-    # scaled_brain_list = block_specific_scaling(brain_list, idx_list)
-    """
-
-    
-    # Group brain indices by block index
-    block_idxs = defaultdict(list)
-    for i, idx in enumerate(idx_list):
-        block_idxs[idx].append(i)
-
-    # Create a scaler for each block
-    scalers = {}
-    for block_idx, indices in block_idxs.items():
-        all_brains_cat = np.concatenate([brain_list[i] for i in indices])
-        scaler = StandardScaler().fit(all_brains_cat)
-        scalers[block_idx] = scaler
-
-    # Scale each brain data array using the corresponding block scaler
-    scaled_brain_list = [scalers[idx].transform(brain) for brain, idx in zip(brain_list, idx_list)]
-    return scaled_brain_list
-
-
-
-
   
 def process_signal(voltage_list, spikes_list, block_list):
     """
@@ -136,6 +214,7 @@ def process_signal(voltage_list, spikes_list, block_list):
     for block in np.unique(block_list):
         
         trial_mask = block_list == block
+
         
         brain_appended = np.concatenate(brain_concat[trial_mask], axis=0)
         
@@ -171,7 +250,6 @@ def process_file(data_file):
     block_list   = data['blockIdx'][:, 0]
     sentence_list = data['sentenceText']
 
-    #another preproc
     # voltage_list = z_score_per_block_scaling(voltage_list, block_list)
     spikes_list = min_max_per_block_scaling(spikes_list, block_list)
     
@@ -180,24 +258,14 @@ def process_file(data_file):
         # brain_list.append(np.concatenate([voltage, spikes], axis=1))
     
     brain_list = spikes_list
-    # brain_list = process_signal(voltage_list, spikes_list, block_list)
     
     sentence_list = process_text(sentence_list)
-
     date_list = [date] * n_trials
+    
     return brain_list, sentence_list, date_list
 
 
-def process_all_files(path):
-    data = {'brain_list':[], 'sentence_list':[], 'date_list':[]}
-    for data_file in sorted(path.glob('*.mat')):
 
-        brains, sentences, dates = process_file(data_file)
-        data['brain_list'].extend(brains)
-        data['sentence_list'].extend(sentences)
-        data['date_list'].extend(dates)
-
-    return data
 
 
 """ TEXT UTILS """
@@ -281,23 +349,34 @@ def get_tokenizer(tokenizer):
     return tokenize_txt
 
 def pad_token_list(token_list, max_tokens):
+    if isinstance(token_list, str):
+        return token_list
+
     num_padding = max_tokens - len(token_list)
     if num_padding >= 0:
         token_list.extend([-100] * num_padding)
     else:
         token_list = token_list[:num_padding]
+    token_list = np.asarray(token_list, dtype=np.int64)
     return token_list
 
 def remove_padding(token_list):
     return [token for token in token_list if token != -100]
 
 class BrainDataset(Dataset):
-    def __init__(self, path, tokenize_function=None, transform=None, max_tokens=25): 
+    def __init__(self, path, 
+                 process_file_function=None, 
+                 transform=None, 
+                 tokenize_function=None, 
+                 max_tokens=25): 
+        
         print('Runed processing of the ', path)
+        if process_file_function is None:
+            process_file_function = process_file
 
-        data = process_all_files(path)
+        data = process_all_files(path, process_file=process_file_function)
             
-        self.inputs = data['brain_list']  # Convert to float32
+        self.inputs = data['brain_list']
         self.targets = data['sentence_list']
         self.date = data['date_list']
 
@@ -305,14 +384,15 @@ class BrainDataset(Dataset):
         self.transform = transform
         self.max_tokens = max_tokens
         
-
         ### Process texts
-        self.targets_tokens = []
+        # remove punctuatio and make it lower case
+        self.targets = [process_string(sent) for sent in self.targets]
 
+        self.targets_tokens = []
         if tokenize_function is not None:
             self.targets_tokens = [tokenize_function(txt) for txt in self.targets]
         else:
-            self.targets_tokens = self.targets[:]
+            self.targets_tokens = self.targets
 
         lens = [len(s) for s in self.inputs]
         lens_txt = [len(s) for s in self.targets_tokens]
@@ -339,20 +419,18 @@ class BrainDataset(Dataset):
             target: [n_tokens]
             date_info: 1
         """
-        input = self.inputs[idx].astype(np.float32)
+        sample = self.inputs[idx].astype(np.float32)
 
         if self.transform is not None:
             # transform input shape: [time, num_channels] [height, width]
-            input = self.transform(image=input)['image']
+            sample = self.transform(image=sample)['image']
 
         target = self.targets_tokens[idx]
-
         target = pad_token_list(target, self.max_tokens)
-        target = np.asarray(target, dtype=np.int64)
         
         date = self.date[idx]
         date_idx = np.array([self.date_to_index[date]])
                 
-        return input, target, date_idx
+        return sample, target, date_idx
     
 
