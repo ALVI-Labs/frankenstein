@@ -203,7 +203,7 @@ class Decoder(nn.Module):
         super().__init__()
         self.first_layer = CausalConv1d(in_channels=D, out_channels=C, kernel_size=3)
         self.act = nn.ELU()
-        self.blocks = nn.Sequential(*[DecoderBlock(in_channels=C, out_channels=C, stride=2) for stride in stride_list])
+        self.blocks = nn.Sequential(*[DecoderBlock(in_channels=C, out_channels=C, stride=stride) for stride in stride_list])
         self.last_layer = CausalConv1d(in_channels=C, out_channels=n_channels_out, kernel_size=3)
     
     def forward(self, x):
@@ -251,31 +251,72 @@ class SoundStream(nn.Module):
             total_loss: mse on nonpadded data
             o: is tensor with shape (batch, Time, Channels)
         """
-        
-        x = rearrange(x, 'b t (c f) -> (b c) f t', c=self.C, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
-        
+        b=x.size(0)
+        x = rearrange(x, 'b t (f c) -> (b c) f t', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
+
         e = self.encoder(x)
-        # reshaping for quantization
         quantized, indices = self.quantizer(e)
         o = self.decoder(quantized)
 
-        total_loss = F.l1_loss(o, x) 
+        total_loss = F.l1_loss(o, x)
+        losses = {'total_loss': total_loss}
         # total_loss = self.custom_l1_loss(o, x)
         if return_preds:
-            o = rearrange(o, '(b c) f t -> b t (c f)', c=self.C, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
-            return total_loss, o
+            o = rearrange(o, '(b c) f t -> b t (f c)', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
+            return losses, o
         else:
-            return total_loss, None
+            return losses, None
 
+    # def forward_new(self, x, targets=None, date_info=None,  return_preds=False):
+    #     """
+    #     Params:
+    #         x: is tensor with shape (Batch, Time, Channels)
+    #     Returns:
+    #         total_loss: mse on nonpadded data
+    #         o: is tensor with shape (batch, Time, Channels)
+    #     """
+    #     b=x.size(0)
+    #     # x = rearrange(x, 'b t (f c) -> (b c) f t', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
+    #     x = rearrange(x, 'b t (f c) -> c b f t', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
 
-    def get_indices(self, x):
-        b = x.size(0)    
-        x = rearrange(x, 'b t (c f) -> (b c) f t', b=b, f=self.n_features)
-    
-        e = self.encoder(x)
-        _, indices = self.quantizer(e)
+    #     outputs = []
+    #     for sample in x:
+            
+    #         e = self.encoder(sample)
+    #         # reshaping for quantization
+    #         quantized, indices = self.quantizer(e)
+    #         o = self.decoder(quantized)
+    #         outputs.append(o)
+
+    #     outputs = torch.stack(outputs, dim=0)
+
+    #     total_loss = F.l1_loss(outputs, x)
+    #     losses = {'total_loss': total_loss}
+    #     # total_loss = self.custom_l1_loss(o, x)
+    #     if return_preds:
+    #         o = rearrange(o, 'c b f t -> b t (f c)', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
+    #         return losses, o
+    #     else:
+    #         return losses, None
+    def get_indices(self, x, return_embeddings=False):
+        b = x.size(0)
+        x = rearrange(x, 'b t (f c) -> (b c) f t', b=b, f=self.n_features)
         
-        return rearrange(indices, '(b c) t -> b t c', b=b, c=256).contiguous()
+        # print('x.shape: (b c) f t', x.shape)
+        
+        e = self.encoder(x)
+        embeds, indices = self.quantizer(e)
+
+        # print('embeds', embeds.shape)
+
+        embeds = rearrange(embeds, '(b c) d t -> b t c d', b=b).contiguous()
+        indices = rearrange(indices, '(b c) t -> b t c', b=b).contiguous()
+        
+        # print('after arrange embeds.', embeds.shape)
+        
+        if return_embeddings:
+            return indices, embeds 
+        return indices
         
     def decode_indices(self, indices):
         """
@@ -287,7 +328,7 @@ class SoundStream(nn.Module):
         indices  = rearrange(indices, 'b t c -> (b c) t')
         quantized = self.quantizer.indices_to_codes(indices)    
         reconstruct = self.decoder(quantized)
-        reconstruct = rearrange(reconstruct, '(b c) f t -> b t (c f)', b=b, c=256, f=self.n_features)
+        reconstruct = rearrange(reconstruct, '(b c) f t -> b t (f c)', b=b, c=256, f=self.n_features)
         return reconstruct
         
     def custom_mse_loss(self, pred, gt):

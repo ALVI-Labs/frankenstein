@@ -20,7 +20,7 @@ class MirasolConfig(Serializable):
 
     n_registers: int = 4
 
-    n_layers: int = 8
+    n_layers: int = 12
     dim: int = 512
     hidden_dim: int = 2048
 
@@ -32,7 +32,7 @@ class MirasolConfig(Serializable):
     rope_theta: float = 10000.0
 
     w_latent_loss: float = 1.0
-    w_recon_loss: float = 0.1
+    w_recon_loss: float = 1.0
 
 class CausalModel(nn.Module):
     """
@@ -76,8 +76,6 @@ class CausalModel(nn.Module):
 
         for block in self.transformer.h:
             x = block(x, attn_mask=attn_mask, rope=rope_cache)
-
-        # x = self.transformer.ln_f(x)
         return x
     
     @property
@@ -184,11 +182,21 @@ class Mirasol(nn.Module):
         self.window_size= config.window_size
         self.block_size = self.get_block_size()
 
-        self.emb = nn.Embedding(vq_model.codebook_size, config.dim)
+        
+        # use embeddings from vq vae and then linear transform them.
+        self.proj_emb = nn.Linear(vq_model.D, config.dim)
+        # self.emb = nn.Embedding(vq_model.codebook_size, config.dim)
+        
         self.combiner = Combiner(config)
-        self.causal = CausalModel(config, block_size=self.block_size, num_tokens_per_time=config.n_registers )
+        self.drop_combiner_out = nn.Dropout1d(p=config.mask_ratio)
+
+        self.causal = CausalModel(config, block_size=self.block_size,
+                                  num_tokens_per_time=config.n_registers)
+
+        self.proj_to_next_token = nn.Linear(config.dim, config.dim)
+        
         self.reconstructor = Reconstructor(config)
-        self.linear_to_indices = nn.Linear(config.dim, vq_model.codebook_size)
+        self.proj_to_indices = nn.Linear(config.dim, vq_model.codebook_size)
         
         self.w_latent_loss = config.w_latent_loss
         self.w_recon_loss = config.w_recon_loss
@@ -220,7 +228,9 @@ class Mirasol(nn.Module):
 
     def forward(self, x, targets=None, date_info=None, return_paddings=False):
         """
-        Forward pass of the Mirasol model processes input `x` through its components to generate embeddings, apply transformations, and compute losses using cosine similarity and cross-entropy.
+        Forward pass of the Mirasol model processes input `x` through its components 
+        to generate embeddings, apply transformations, and compute losses 
+        using cosine similarity and cross-entropy.
 
         Parameters:
             x (torch.Tensor): Input tensor of shape [B, T, C] where B is the batch size,
@@ -252,24 +262,30 @@ class Mirasol(nn.Module):
         is_padded = (x==0).all(dim=-1) # B, T
         is_padded = self.adjust_pad_mask(is_padded, scale_factor=scale_factor)
 
-        indices_out = self.vq_model.get_indices(x)
+        indices_out, embeds = self.vq_model.get_indices(x, return_embeddings=True)
         indices = torch.clone(indices_out)
         
-        tokens = self.emb(indices)
-        
-        b, t, c, d = tokens.size()
+        # tokens = self.emb(indices)
+        x = self.proj_emb(embeds)
+                
+        b, t, c, d = x.size()
+        x = rearrange(x, 'b t c d -> (b t) c d', b=b, t=t, 
+                           c=self.config.n_electrodes, d=self.config.dim)
 
-        tokens = rearrange(tokens, 'b t c d -> (b t) c d', b=b, t=t, c=self.config.n_electrodes, d=self.config.dim)
+        x = self.combiner(x)
 
-        tokens = self.combiner(tokens)
-
-        tokens = rearrange(tokens, '(b t) r d -> b (t r) d', b=b, t=t, r=self.config.n_registers, d=self.config.dim)
+        x = rearrange(x, '(b t) r d -> b (t r) d', b=b, t=t, 
+                           r=self.config.n_registers, d=self.config.dim)
     
-        latents = self.causal(tokens) # b (t r) d -> b (t r) d
+        latents = self.causal(self.drop_combiner_out(x)) # b (t r) d -> b (t r) d
 
-        latent_loss = self.cosine_loss(latents[:, :-self.config.n_registers], 
-                                       tokens[:, self.config.n_registers:], 
-                                       is_padded[:, self.config.n_registers:])
+        latent_loss = 0 
+        if self.w_latent_loss:
+            future_hat = self.proj_to_next_token(latents[:, :-self.config.n_registers])
+            future = x[:, self.config.n_registers:]
+            is_padded_cut = is_padded[:, self.config.n_registers:]
+            
+            latent_loss = self.cosine_loss(future_hat, future.detach(), is_padded_cut)
 
         # here we're working with latents
         recon_loss = 0 
@@ -279,7 +295,7 @@ class Mirasol(nn.Module):
 
             x = self.reconstructor(latents_to_recon) # (b t) r d -> (b t) c d 
             
-            preds = self.linear_to_indices(x) # (b t) c d -> (b t) c codebook_size
+            preds = self.proj_to_indices(x) # (b t) c d -> (b t) c codebook_size
 
             preds = rearrange(preds, '(b t) c e -> b t c e', b=b, t=t, 
                               c=self.config.n_electrodes, e=self.vq_model.codebook_size)
@@ -302,15 +318,6 @@ class Mirasol(nn.Module):
 
         return losses_dict, latents
 
-
-    # def _init_weights(self, model, mean=0.0, std=0.02):
-    #     for module in model.modules():
-    #         if isinstance(module, nn.Linear):
-    #             nn.init.normal_(module.weight, mean=mean, std=std)
-    #             if module.bias is not None:
-    #                 nn.init.zeros_(module.bias)
-    #         elif isinstance(module, nn.Embedding):
-    #             nn.init.normal_(module.weight, mean=mean, std=std)
 
     def _init_all_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -346,7 +353,8 @@ class Franky(nn.Module):
         self.tokenizer = llm_model['tokenizer']
 
         n_embd_decoder = self.llm_decoder.config.d_model
-        self.projector = nn.Linear(brain_model.config.dim, n_embd_decoder, bias=False)
+        self.projector = nn.Sequential(RMSNorm(brain_model.config.dim), 
+                                       nn.Linear(brain_model.config.dim, n_embd_decoder, bias=True))
 
         self.date_embeddings = nn.Embedding(num_embeddings=25, embedding_dim=n_embd_decoder)
 
@@ -383,7 +391,8 @@ class Franky(nn.Module):
         input_ids = targets.clone()
         input_ids[input_ids == -100] = self.tokenizer.eos_token_id
         
-        logits= self.llm_decoder(input_ids=input_ids, encoder_hidden_states=features)['last_hidden_state']
+        logits= self.llm_decoder(input_ids=input_ids, 
+                                 encoder_hidden_states=features)['last_hidden_state']
         logits = self.proj_out(logits)
         txt_loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
                                    targets[:, 1:].reshape(-1), ignore_index=-100)
@@ -410,7 +419,9 @@ class Franky(nn.Module):
         # temperature = 1.0 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
         # top_k = 10
 
-        res = self.llm_model.generate(input_ids=input_ids, encoder_hidden_states=features, encoder_attention_mask=~is_padded)
+        res = self.llm_model.generate(input_ids=input_ids, 
+                                      encoder_hidden_states=features,
+                                      encoder_attention_mask=~is_padded)
         pred = self.tokenizer.batch_decode(res)
         
         return pred
