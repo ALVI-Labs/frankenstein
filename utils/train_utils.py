@@ -124,6 +124,8 @@ def run_train_model(model, datasets, config, model_config):
                 config={**config.__dict__, **model_config.__dict__}, 
                 init_kwargs={"wandb":{"name":config.exp_name}})
 
+    # wandb.watch(model)
+
     print('Device for training: ', accelerator.device)
     print('Num devices: ', accelerator.num_processes)
 

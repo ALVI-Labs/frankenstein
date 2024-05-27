@@ -49,12 +49,14 @@ def process_all_files(path, process_file):
     data_files = sorted(path.glob('*.mat'))
     
     for data_file in tqdm(data_files, desc="Processing files", unit="file"):
-        brains, sentences, dates = process_file(data_file)
+        brains, sentences, dates = process_file(data_file)    
+        # reducing memory consumption
+        brains = [data.astype(np.float16) for data in brains]
+        
         data['brain_list'].extend(brains)
         data['sentence_list'].extend(sentences)
         data['date_list'].extend(dates)
-        gc.collect()
-
+    gc.collect()
     return data
 
 
@@ -81,7 +83,7 @@ def process_file_v2(data_file):
     n_trials = len(block_list)
     
     voltage_list = [robust_min_max_per_block(voltage_list, block_list, apply_clip=True)]
-    spikes_list = [robust_min_max_per_block(signal, block_list, apply_clip=False) for signal in spikes_list]
+    spikes_list = [robust_min_max_per_block(signal, block_list, apply_clip=True) for signal in spikes_list]
 
     normalized_signal_list = voltage_list + spikes_list
     
@@ -94,7 +96,7 @@ def process_file_v2(data_file):
     date_list = [date] * n_trials
 
     # delete unnecessary files
-    del data, voltage_list, spikes_list, normalized_signal_list
+    del data, normalized_signal_list
     
     return brain_list, sentence_list, date_list
 
@@ -122,7 +124,7 @@ def robust_min_max_per_block(signal_list, block_list, apply_clip=True, normalize
         # unpack and save
         signal_processed[trial_mask] = unpack(x, shapes, '* c')
 
-    del signal_list, block_list, x
+    # del signal_list, block_list, x
     
     return signal_processed
 
