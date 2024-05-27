@@ -37,6 +37,7 @@ class MirasolConfig(Serializable):
 class CausalModel(nn.Module):
     """
     Apply causal attention with RoPE and Attention mask. Same rope for N tokens per time step.
+    B, N, D -> B, N, D
     """
     def __init__(self, config, block_size, num_tokens_per_time=1):
         super().__init__()
@@ -95,7 +96,8 @@ class CausalModel(nn.Module):
 
 class Combiner(nn.Module):
     """
-    Apply causal attention with RoPE and Attention mask. Same rope for N tokens per time step.
+    Combine inputs features into fixed number of embeddings 
+    Add learnabe positional embeddings, blocks, get n_registers as combined representation.
     """
     def __init__(self, config):
         super().__init__()
@@ -112,12 +114,11 @@ class Combiner(nn.Module):
 
     def forward(self, x, attn_mask=None, rope_cache=None):
         """
-        myo signals with shape: with shape [B, C, D]
+        Transform embeddings: B, N, D -> B, M, D
         """
 
         x = x + self.pe
         x = self.transformer.drop(x)
-        # embedding
         
         for block in self.transformer.h:
             x = block(x)
@@ -134,6 +135,8 @@ class Combiner(nn.Module):
     
 class Reconstructor(nn.Module):
     """
+    Get combined n features and reconstruct all features. 
+    Add learnabe positional embeddings. No dropout.
     """
     def __init__(self, config):
         super().__init__()
@@ -150,7 +153,7 @@ class Reconstructor(nn.Module):
 
     def forward(self, x, attn_mask=None, rope_cache=None):
         """
-        x: B, M, D
+        Transform: B, M, D -> B, N, D
         """
         cls_tokens = self.cls_tokens.expand(x.size(0), -1, -1)
         x = torch.cat([cls_tokens, x], dim=1)
@@ -158,7 +161,7 @@ class Reconstructor(nn.Module):
         
         # embedding
         for block in self.transformer.h:
-            x = block(x, attn_mask=attn_mask, rope=rope_cache)
+            x = block(x)
 
         x = self.transformer.ln_f(x)
         return x[:, :self.config.n_electrodes]
@@ -192,7 +195,6 @@ class Mirasol(nn.Module):
 
         self.causal = CausalModel(config, block_size=self.block_size,
                                   num_tokens_per_time=config.n_registers)
-
         self.proj_to_next_token = nn.Linear(config.dim, config.dim)
         
         self.reconstructor = Reconstructor(config)
@@ -206,13 +208,12 @@ class Mirasol(nn.Module):
 
     def get_block_size(self):
         block_size = self.config.window_size / self.vq_model.downsample * self.config.n_registers
-        block_size = int(block_size)
-        return block_size
+        return int(block_size)
     
     def cosine_loss(self, x, y, is_padded):
         valid_mask = ~is_padded
 
-        cosine_sim = F.cosine_similarity(x, y, dim=-1, eps=1e-06)
+        cosine_sim = F.cosine_similarity(x, y, dim=-1, eps=1e-05)
         cosine_sim = (cosine_sim * valid_mask).sum() / valid_mask.sum()
         
         cosine_loss = 1 - cosine_sim
@@ -243,11 +244,6 @@ class Mirasol(nn.Module):
                 - total_loss (torch.Tensor): The sum of latent and reconstruction losses.
                 - latent (torch.Tensor): The latent embeddings after processing through the causal model.
 
-
-        Next steps
-        1. add masking before causal model
-        2. calculate loss only on non padded tokens
-        3. non padded on reconstructor
 
         t = T/8
         VQ VAE: B, T, C -> B, t, C
@@ -307,6 +303,7 @@ class Mirasol(nn.Module):
                                         indices_out[:, 1:].reshape(-1).to(torch.long))
 
         latents = latents[:, :-self.config.n_registers]
+        is_padded = is_padded[:, :-self.config.n_registers]
 
         losses_dict = {'total_loss': self.w_latent_loss * latent_loss + self.w_recon_loss * recon_loss, 
                       'latent_loss': latent_loss,
@@ -314,7 +311,7 @@ class Mirasol(nn.Module):
 
 
         if return_paddings:
-            return losses_dict, latents, is_padded[:, :-self.config.n_registers]
+            return losses_dict, latents, is_padded
 
         return losses_dict, latents
 
@@ -341,7 +338,9 @@ class Mirasol(nn.Module):
         return next(self.parameters()).device
     
 class Franky(nn.Module): 
-    """This is first model which incorporate brain features into LLM"""
+    """
+    This is first model which incorporate brain features into LLM
+    """
 
     def __init__(self, brain_model, llm_model, w_txt_loss=1.0):
         super().__init__()
@@ -360,8 +359,6 @@ class Franky(nn.Module):
 
         self.w_txt_loss = w_txt_loss
 
-        # self._init_weights(self.combiner_model)
-        # self._init_weights(self.causal_model)
         self._init_weights(self.projector)
         self._init_weights(self.date_embeddings)
 
@@ -385,8 +382,8 @@ class Franky(nn.Module):
         losses, latents = self.brain_model(x) # b, N, d
         features = self.projector(latents)  
 
-        # date_embedding = self.date_embeddings(date_info)
-        # x = torch.cat([x, date_embedding], dim=-1)
+        date_embedding = self.date_embeddings(date_info)
+        features = torch.cat([features, date_embedding], dim=1)
         
         input_ids = targets.clone()
         input_ids[input_ids == -100] = self.tokenizer.eos_token_id
@@ -394,6 +391,7 @@ class Franky(nn.Module):
         logits= self.llm_decoder(input_ids=input_ids, 
                                  encoder_hidden_states=features)['last_hidden_state']
         logits = self.proj_out(logits)
+        
         txt_loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)),
                                    targets[:, 1:].reshape(-1), ignore_index=-100)
         
@@ -425,9 +423,6 @@ class Franky(nn.Module):
         pred = self.tokenizer.batch_decode(res)
         
         return pred
-
-    
-    
 
     def get_num_params(self):
         n_params = sum(p.numel() for p in self.parameters())

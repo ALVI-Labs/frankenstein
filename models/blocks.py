@@ -25,7 +25,6 @@ def build_advanced_causal_mask(block_size, tok_per_time):
     causal_mask.requires_grad=False
     return causal_mask
 
-
 def build_complex_rope_cache(dim: int, seq_len: int, theta: float) -> torch.Tensor:
     """
     Compute cache for RoPE and store on device with complex dtype. 
