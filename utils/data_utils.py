@@ -72,38 +72,50 @@ def process_file_v2(data_file):
     data = scipy.io.loadmat(data_file)
     date = data_file.stem
 
-
     block_list   = data['blockIdx'][:, 0]
     sentence_list = data['sentenceText']
 
     voltage_list = data['spikePow'][0]
-    # spikes_list = [data['tx1'][0], data['tx2'][0], data['tx3'][0], data['tx4'][0]]
     spikes_list = [data['tx1'][0], data['tx2'][0], data['tx3'][0]]
 
-    n_trials = len(block_list)
-    
-    voltage_list = [robust_min_max_per_block(voltage_list, block_list, apply_clip=True)]
-    spikes_list = [robust_min_max_per_block(signal, block_list, apply_clip=True) for signal in spikes_list]
+    voltage_list = [robust_min_max_per_block(voltage_list, block_list, 
+                                             apply_clip=True,
+                                             normalize_per_channel=False, 
+                                             outliers_per_channel=False)]
+
+    spikes_list = [robust_min_max_per_block(signal, block_list, 
+                                            apply_clip=True,
+                                            normalize_per_channel=False,
+                                            outliers_per_channel=False) for signal in spikes_list]
 
     normalized_signal_list = voltage_list + spikes_list
-    
+
+    # concatenate all features channels dim and save date information
+    n_trials = len(block_list)    
+    date_list = [date] * n_trials
     brain_list = [None] * n_trials
     
     for idx in range(n_trials):
         brain_list[idx] = np.concatenate([signal[idx] for signal in normalized_signal_list], axis=1)
     
     sentence_list = process_text(sentence_list)
-    date_list = [date] * n_trials
-
+    
     # delete unnecessary files
     del data, normalized_signal_list
     
     return brain_list, sentence_list, date_list
 
-def robust_min_max_per_block(signal_list, block_list, apply_clip=True, normalize_per_channel=False):
+def robust_min_max_per_block(signal_list, block_list, 
+                             apply_clip=True, 
+                             normalize_per_channel=False, 
+                             outliers_per_channel=False):
     """
-    Preprocess voltages / spike counts based on the
-    block-consistent features: min max scaling
+    Preprocess signals per block session. block-consistent features: min max scaling
+    Get all signals for each session. Clip outliers and then apply min max scaling.
+    Min and max are calculated for all electrodes by default.
+
+    To do: 
+    1. clipping should across electrodes too.
     """    
     signal_list = np.array(signal_list, dtype='object')
     block_list = np.array(block_list)
@@ -117,25 +129,28 @@ def robust_min_max_per_block(signal_list, block_list, apply_clip=True, normalize
         # concat all data per block, clip and minmax scale
         x, shapes = pack(signal_list[trial_mask], '* c')
         if apply_clip:
-            lows, ups = get_low_upper_values(x)
+            lows, ups = get_low_upper_values(x, outliers_per_channel)
             x = np.clip(x, lows, ups)
         x = normalize_data(x, normalize_per_channel=normalize_per_channel)
 
         # unpack and save
         signal_processed[trial_mask] = unpack(x, shapes, '* c')
-
-    # del signal_list, block_list, x
     
     return signal_processed
 
 
-def get_low_upper_values(x):
+def get_low_upper_values(x, outliers_per_channel=False):
     """
     s - (T, C) shapes
+    If normalize_per_channel. We calculate whole distribution 
+    and remove outliers based on this values. 
     """
-    Q1 = np.percentile(x, 25, axis=0)
-    Q2 = np.percentile(x, 50, axis=0) 
-    Q3 = np.percentile(x, 75, axis=0)
+    if outliers_per_channel:
+        Q1 = np.percentile(x, 25, axis=0)
+        Q3 = np.percentile(x, 75, axis=0)
+    else:
+        Q1 = np.percentile(x, 25)
+        Q3 = np.percentile(x, 75)
     
     IQR = Q3 - Q1
     
