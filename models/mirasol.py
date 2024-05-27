@@ -342,7 +342,8 @@ class Franky(nn.Module):
     This is first model which incorporate brain features into LLM
     """
 
-    def __init__(self, brain_model, llm_model, w_txt_loss=1.0):
+    def __init__(self, brain_model, llm_model, w_txt_loss=1.0, 
+                 add_temporal_embeddings=False, num_temporal_embeddings=2048):
         super().__init__()
         
         self.brain_model = brain_model
@@ -357,8 +358,11 @@ class Franky(nn.Module):
 
         self.date_embeddings = nn.Embedding(num_embeddings=25, embedding_dim=n_embd_decoder)
 
-        self.w_txt_loss = w_txt_loss
+        self.add_temporal_embeddings = add_temporal_embeddings
+        if self.add_temporal_embeddings:
+            self.wpe = nn.Embedding(num_embeddings=num_temporal_embeddings, embedding_dim=n_embd_decoder)
 
+        self.w_txt_loss = w_txt_loss
         self._init_weights(self.projector)
         self._init_weights(self.date_embeddings)
 
@@ -380,7 +384,12 @@ class Franky(nn.Module):
         x: B, T, C
         """
         losses, latents = self.brain_model(x) # b, N, d
-        features = self.projector(latents)  
+        features = self.projector(latents)
+
+        if self.add_temporal_embeddings:
+            pos = torch.arange(0, features.size(1), dtype=torch.long, device=features.device) # shape (t)
+            pos_embeddings = self.wpe(pos)
+            features = features + pos_embeddings
 
         date_embedding = self.date_embeddings(date_info)
         features = torch.cat([features, date_embedding], dim=1)
