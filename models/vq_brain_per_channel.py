@@ -218,17 +218,7 @@ class SoundStream(nn.Module):
     def __init__(self, C, n_features, levels=[8,5,5,5], stride_list=[2, 2]):
         super().__init__()
         """
-        [1, 16*4, 32] - 1.5 sec 
-        encoder
-        [1, 16, 8] - 4x downscale + 4x reduce n_channels
-        quantize
-        [1, 16, 8] - find nearest from codebook. (2048 vectors with 16 size).
-        decoder 
-        [1, 16*4, 32]
-        
-        
-        vec_emb - [16] * 8 
-        codebook - [16] * 2048
+        Apply per channel quantization: 'b t (f c) -> (b c) f t'
         """
         self.C = C
         self.D = len(levels)
@@ -238,14 +228,10 @@ class SoundStream(nn.Module):
         self.encoder = Encoder(C=C, D=self.D, n_electrodes=n_features, stride_list=stride_list)
         self.quantizer = FSQ(levels=levels, channel_first=True)
         self.decoder = Decoder(C=C, D=self.D, n_channels_out=n_features, stride_list=stride_list[::-1])
-        self.apply(self._init_all_weights)
         
-
-        
-
         self.codebook_size = self.quantizer.codebook_size 
-
         
+        self.apply(self._init_all_weights)
         print("self.codebook_size", self.codebook_size)
         print("self.downsample", self.downsample)
    
@@ -265,63 +251,26 @@ class SoundStream(nn.Module):
         o = self.decoder(quantized)
 
         total_loss = F.l1_loss(o, x)
+
         losses = {'total_loss': total_loss, 
-                  'codebook_usage': len(torch.unique(indices)) / b}
+                  'codebook_usage': len(torch.unique(indices))}
         
-        # total_loss = self.custom_l1_loss(o, x)
         if return_preds:
             o = rearrange(o, '(b c) f t -> b t (f c)', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
             return losses, o
         else:
             return losses, None
 
-    # def forward_new(self, x, targets=None, date_info=None,  return_preds=False):
-    #     """
-    #     Params:
-    #         x: is tensor with shape (Batch, Time, Channels)
-    #     Returns:
-    #         total_loss: mse on nonpadded data
-    #         o: is tensor with shape (batch, Time, Channels)
-    #     """
-    #     b=x.size(0)
-    #     # x = rearrange(x, 'b t (f c) -> (b c) f t', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
-    #     x = rearrange(x, 'b t (f c) -> c b f t', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
-
-    #     outputs = []
-    #     for sample in x:
-            
-    #         e = self.encoder(sample)
-    #         # reshaping for quantization
-    #         quantized, indices = self.quantizer(e)
-    #         o = self.decoder(quantized)
-    #         outputs.append(o)
-
-    #     outputs = torch.stack(outputs, dim=0)
-
-    #     total_loss = F.l1_loss(outputs, x)
-    #     losses = {'total_loss': total_loss}
-    #     # total_loss = self.custom_l1_loss(o, x)
-    #     if return_preds:
-    #         o = rearrange(o, 'c b f t -> b t (f c)', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
-    #         return losses, o
-    #     else:
-    #         return losses, None
     def get_indices(self, x, return_embeddings=False):
         b = x.size(0)
         x = rearrange(x, 'b t (f c) -> (b c) f t', b=b, f=self.n_features)
         
-        # print('x.shape: (b c) f t', x.shape)
-        
         e = self.encoder(x)
         embeds, indices = self.quantizer(e)
 
-        # print('embeds', embeds.shape)
-
         embeds = rearrange(embeds, '(b c) d t -> b t c d', b=b).contiguous()
         indices = rearrange(indices, '(b c) t -> b t c', b=b).contiguous()
-        
-        # print('after arrange embeds.', embeds.shape)
-        
+                
         if return_embeddings:
             return indices, embeds 
         return indices
@@ -336,7 +285,7 @@ class SoundStream(nn.Module):
         indices  = rearrange(indices, 'b t c -> (b c) t')
         quantized = self.quantizer.indices_to_codes(indices)    
         reconstruct = self.decoder(quantized)
-        reconstruct = rearrange(reconstruct, '(b c) f t -> b t (f c)', b=b, c=256, f=self.n_features)
+        reconstruct = rearrange(reconstruct, '(b c) f t -> b t (f c)', b=b, f=self.n_features)
         return reconstruct
         
     def custom_mse_loss(self, pred, gt):
@@ -371,6 +320,36 @@ class SoundStream(nn.Module):
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    # def forward_new(self, x, targets=None, date_info=None,  return_preds=False):
+    #     """
+    #     Params:
+    #         x: is tensor with shape (Batch, Time, Channels)
+    #     Returns:
+    #         total_loss: mse on nonpadded data
+    #         o: is tensor with shape (batch, Time, Channels)
+    #     """
+    #     b=x.size(0)
+    #     # x = rearrange(x, 'b t (f c) -> (b c) f t', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
+    #     x = rearrange(x, 'b t (f c) -> c b f t', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
 
+    #     outputs = []
+    #     for sample in x:
+            
+    #         e = self.encoder(sample)
+    #         # reshaping for quantization
+    #         quantized, indices = self.quantizer(e)
+    #         o = self.decoder(quantized)
+    #         outputs.append(o)
+
+    #     outputs = torch.stack(outputs, dim=0)
+
+    #     total_loss = F.l1_loss(outputs, x)
+    #     losses = {'total_loss': total_loss}
+    #     # total_loss = self.custom_l1_loss(o, x)
+    #     if return_preds:
+    #         o = rearrange(o, 'c b f t -> b t (f c)', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
+    #         return losses, o
+    #     else:
+    #         return losses, None
     
     
