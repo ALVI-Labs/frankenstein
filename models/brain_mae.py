@@ -31,12 +31,12 @@ class MAEConfig(Serializable):
 
     # data params
     n_layers: int = 6
-    dim: int = 256
-    hidden_dim: int = 1024
+    dim: int = 512
+    hidden_dim: int = 2048
 
-    head_dim: int = 16
-    n_heads: int = 8
-    n_kv_heads: int = 8 # now it should be the same with n_heads.
+    head_dim: int = 32
+    n_heads: int = 16
+    n_kv_heads: int = 16 # now it should be the same with n_heads.
 
 
 
@@ -119,8 +119,6 @@ class Encoder(nn.Module):
     def get_num_params(self):
         n_params = sum(p.numel() for p in self.parameters())
         return n_params
-
-
 
 class MAE(nn.Module):
     def __init__(self, encoder_config, mae_config):
