@@ -15,7 +15,7 @@ class EncoderConfig(Serializable):
     window_size: int = 32
     n_electrodes: int = 256
     time_patch_size: int = 4
-    n_features: int = 1
+    n_features: int = 4
 
     n_layers: int = 12
     dim: int = 512
@@ -136,12 +136,13 @@ class MAE(nn.Module):
         ))
 
         self.mask_token = nn.Parameter(torch.randn(mae_config.dim) * 0.02)
-        self.decoder_pos_emb = nn.Parameter(torch.randn(1, self.encoder.block_size + 1, mae_config.dim) * 0.02)
+        # self.decoder_pos_emb = nn.Parameter(torch.randn(1, self.encoder.block_size + 1, mae_config.dim) * 0.02)
         self.proj_to_signals = nn.Linear(mae_config.dim, self.encoder.patch_dim)
         
         self.apply(self._init_all_weights)
-        print(mae_config)
-        print("MAE: number of parameters: %.2fM" % (self.get_num_params()/1e6))
+
+        print('mae_config', mae_config)
+        print("Full MAE: number of parameters: %.2fM" % (self.get_num_params()/1e6))
 
     def get_num_params(self, non_embedding=True):
         n_params = sum(p.numel() for p in self.parameters())
@@ -168,11 +169,15 @@ class MAE(nn.Module):
         batch_range = torch.arange(b, device=x.device)[:, None]
         
         # Encoder
-        patches_rearranged = self.encoder.reshape_to_patches(x) # b t c patch_dim
+        patches = self.encoder.reshape_to_patches(x) # (b t c pd)      
+
+        pos_encodings = self.encoder.time_pe + self.encoder.spatial_pe
+        pos_encodings = rearrange(pos_encodings, '1 t c d -> 1 (t c) d')
+
+        embds = rearrange(patches, 'b t c pd -> b (t c) pd')
+        embds = self.encoder.transformer.emb(embds)
         
-        embds = self.encoder.transformer.emb(patches_rearranged)
-        embds = embds + self.encoder.time_pe + self.encoder.spatial_pe
-        full_tokens = rearrange(embds, 'b t c d -> b (t c) d')
+        full_tokens = embds + pos_encodings
 
         # masking 
         masked_indices, unmasked_indices = self.get_masking_indices(self.masking_ratio, full_tokens) # [b, N]
@@ -200,10 +205,9 @@ class MAE(nn.Module):
         decoder_tokens[batch_range, unmasked_indices] = data_tokens
         decoder_tokens[batch_range, masked_indices] = self.mask_token.to(data_tokens.dtype)
 
+        decoder_tokens = decoder_tokens + pos_encodings
         decoder_tokens = torch.cat([cls_token, decoder_tokens], axis=1)
-        decoder_tokens = decoder_tokens + self.decoder_pos_emb
 
-        
         for block in self.decoder.h:
             decoder_tokens = block(decoder_tokens)
         
@@ -214,7 +218,7 @@ class MAE(nn.Module):
 
         tokens_pred_masked = pred_tokens[batch_range, masked_indices]
 
-        patches_rearranged = rearrange(patches_rearranged, 'b t c p -> b (t c) p')
+        patches_rearranged = rearrange(patches, 'b t c p -> b (t c) p')
         tokens_real_masked = patches_rearranged[batch_range, masked_indices]
 
         loss = F.mse_loss(tokens_pred_masked, tokens_real_masked)
