@@ -108,7 +108,7 @@ def process_file_v2(data_file):
 def robust_min_max_per_block(signal_list, block_list, 
                              apply_clip=True, 
                              normalize_per_channel=False, 
-                             outliers_per_channel=False):
+                             outliers_per_channel=True):
     """
     Preprocess signals per block session. block-consistent features: min max scaling
     Get all signals for each session. Clip outliers and then apply min max scaling.
@@ -139,7 +139,7 @@ def robust_min_max_per_block(signal_list, block_list,
     return signal_processed
 
 
-def get_low_upper_values(x, outliers_per_channel=False):
+def get_low_upper_values(x, outliers_per_channel=True):
     """
     s - (T, C) shapes
     If normalize_per_channel. We calculate whole distribution 
