@@ -113,7 +113,7 @@ class ResidualUnitOld(nn.Module):
         self.layers = nn.Sequential(
             CausalConv1d(in_channels=in_channels, out_channels=out_channels,
                          kernel_size=3, dilation=dilation),
-            nn.ELU(),
+            nn.SiLU(),
             nn.Conv1d(in_channels=out_channels, out_channels=in_channels,
                       kernel_size=1)
         )
@@ -130,15 +130,15 @@ class EncoderBlock(nn.Module):
             ResidualUnit(in_channels=in_channels,
                          out_channels=in_channels,
                          dilation=1),
-            nn.ELU(),
+            nn.SiLU(),
             ResidualUnit(in_channels=in_channels,
                          out_channels=in_channels,
                          dilation=1),
-            nn.ELU(),
+            nn.SiLU(),
             ResidualUnit(in_channels=in_channels,
                          out_channels=in_channels, 
                          dilation=1),
-            nn.ELU(),
+            nn.SiLU(),
             CausalConv1d(in_channels=in_channels,
                          out_channels=out_channels,
                          kernel_size=2*stride, 
@@ -157,15 +157,15 @@ class DecoderBlock(nn.Module):
             CausalConvTranspose1d(in_channels=in_channels,
                                    out_channels=out_channels,
                                    kernel_size=2*stride, stride=stride),
-            nn.ELU(),
+            nn.SiLU(),
             ResidualUnit(in_channels=out_channels, 
                          out_channels=out_channels,
                          dilation=1),
-            nn.ELU(),
+            nn.SiLU(),
             ResidualUnit(in_channels=out_channels, 
                          out_channels=out_channels,
                          dilation=1),
-            nn.ELU(),
+            nn.SiLU(),
             ResidualUnit(in_channels=out_channels, 
                          out_channels=out_channels,
                          dilation=1),
@@ -182,11 +182,11 @@ class Encoder(nn.Module):
 
         self.layers = nn.Sequential(
             CausalConv1d(in_channels=n_electrodes, out_channels=C, kernel_size=3),
-            nn.ELU(),
+            nn.SiLU(),
             EncoderBlock(in_channels=C, out_channels=2*C, stride=1),
-            nn.ELU(),
+            nn.SiLU(),
             EncoderBlock(in_channels=2*C, out_channels=2*C, stride=1),
-            nn.ELU(),
+            nn.SiLU(),
             CausalConv1d(in_channels=2*C, out_channels=D, kernel_size=3)
         )
 
@@ -203,11 +203,11 @@ class Decoder(nn.Module):
         
         self.layers = nn.Sequential(
             CausalConv1d(in_channels=D, out_channels=2*C, kernel_size=3),
-            nn.ELU(),
+            nn.SiLU(),
             DecoderBlock(in_channels=2*C, out_channels=2*C, stride=1),
-            nn.ELU(),
+            nn.SiLU(),
             DecoderBlock(in_channels=2*C, out_channels=C, stride=1),
-            nn.ELU(),
+            nn.SiLU(),
             CausalConv1d(in_channels=C, out_channels=n_channels_out, kernel_size=3)
         )
     

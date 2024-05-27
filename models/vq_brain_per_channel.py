@@ -234,12 +234,18 @@ class SoundStream(nn.Module):
         self.D = len(levels)
         self.n_features = n_features
         self.downsample = int(np.prod(stride_list))
-        self.encoder = Encoder(C=C, D=self.D, n_electrodes=n_features, stride_list=stride_list)
-        self.decoder = Decoder(C=C, D=self.D, n_channels_out=n_features, stride_list=stride_list[::-1])
         
+        self.encoder = Encoder(C=C, D=self.D, n_electrodes=n_features, stride_list=stride_list)
         self.quantizer = FSQ(levels=levels, channel_first=True)
+        self.decoder = Decoder(C=C, D=self.D, n_channels_out=n_features, stride_list=stride_list[::-1])
+        self.apply(self._init_all_weights)
+        
+
+        
 
         self.codebook_size = self.quantizer.codebook_size 
+
+        
         print("self.codebook_size", self.codebook_size)
         print("self.downsample", self.downsample)
    
@@ -259,7 +265,9 @@ class SoundStream(nn.Module):
         o = self.decoder(quantized)
 
         total_loss = F.l1_loss(o, x)
-        losses = {'total_loss': total_loss}
+        losses = {'total_loss': total_loss, 
+                  'codebook_usage': len(torch.unique(indices)) / b}
+        
         # total_loss = self.custom_l1_loss(o, x)
         if return_preds:
             o = rearrange(o, '(b c) f t -> b t (f c)', b=b, f=self.n_features) #4, 768, 256 -> 4x256, 768, 1
@@ -354,6 +362,15 @@ class SoundStream(nn.Module):
         perplexity = (-(avg_probs * torch.log(avg_probs + 1e-10)).sum()).exp()
         # cluster_use = torch.sum(avg_probs > 0)
         return perplexity
-    
+
+
+    def _init_all_weights(self, module):
+        if isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     
     
