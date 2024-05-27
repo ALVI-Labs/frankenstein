@@ -218,13 +218,33 @@ class MAE(nn.Module):
         losses = {'total_loss': loss}
         
         if return_preds:
-            binary_mask = torch.zeros_like(x, device=x.device, dtype=x.dtype) 
+            binary_mask = torch.zeros_like(patches, device=x.device, dtype=x.dtype) 
             binary_mask[batch_range, masked_indices] = 1
 
-            reconstruction_signal = torch.zeros_like(x, device=x.device, dtype=x.dtype)
-            
+            reconstruction_signal = torch.zeros_like(patches, device=x.device, dtype=x.dtype)
+
+            # embds = self.encoder.transformer.emb(patches)
+            # embds = embds + self.encoder.time_pe + self.encoder.spatial_pe
+            # full_tokens = rearrange(embds, 'b t c d -> b (t c) d')
+            print(reconstruction_signal.shape)
+            print(pred_tokens.shape)
             reconstruction_signal[batch_range, masked_indices] = pred_tokens[batch_range, masked_indices]
-            reconstruction_signal[batch_range, unmasked_indices] = x[batch_range, unmasked_indices]
+            # patches_flt = rearrange(patches, 'b t c d -> b (t c) d')
+            reconstruction_signal[batch_range, unmasked_indices] = patches[batch_range, unmasked_indices]
+
+            reconstruction_signal = rearrange(reconstruction_signal, 'b (t c) p -> b (t p) c '
+                                              , c=self.encoder.config.n_electrodes
+                                              , p=self.encoder.config.patch_size)
+
+            binary_mask = rearrange(
+                                      binary_mask
+                                    , 'b (t c) p -> b (t p) c '
+                                    , c=self.encoder.config.n_electrodes
+                                    , p=self.encoder.config.patch_size
+                                    )
+        
+
+            # reconstruction_signal = rearrange()
 
             return losses, reconstruction_signal, binary_mask
 
