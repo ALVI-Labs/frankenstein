@@ -194,7 +194,7 @@ def run_train_model(model, datasets, config, model_config):
                 ## printing 
                 mean_val_loss_dict = {key: sum(d[key] for d in val_loss_list) / len(val_loss_list) for key in val_loss_list[0]}
                 
-                val_loss_dict_to_log = {'val/' + key: value.item() for key, value in mean_val_loss_dict.items()}
+                val_loss_dict_to_log = {'val/' + key: value for key, value in mean_val_loss_dict.items()}
                 accelerator.log(val_loss_dict_to_log, step=overall_step)
                 
 
