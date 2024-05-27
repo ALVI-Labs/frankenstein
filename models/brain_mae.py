@@ -158,13 +158,13 @@ class MAE(nn.Module):
         """
         Inputs: x with shape -> B, T, C
         """
-        b, t, c = x.shape
+        b, ts, c = x.shape
         batch_range = torch.arange(b, device=x.device)[:, None]
         
         # Encoder
-        patches = self.encoder.reshape_to_patches(x) # b t c p
+        patches_rearranged = self.encoder.reshape_to_patches(x) # b t c p
         
-        embds = self.encoder.transformer.emb(patches)
+        embds = self.encoder.transformer.emb(patches_rearranged)
         embds = embds + self.encoder.time_pe + self.encoder.spatial_pe
         full_tokens = rearrange(embds, 'b t c d -> b (t c) d')
 
@@ -176,12 +176,10 @@ class MAE(nn.Module):
         date_emb = self.encoder.date_embeddings(date_info)
         x = torch.cat([date_emb, tokens], dim=1) # b, 1 + (t c)*0.25, 
         
-
         for block in self.encoder.transformer.h:
             x = block(x)
         x = self.encoder.transformer.ln_f(x)
 
-        
         ### DECODER 
         unmasked_decoder_tokens = self.decoder.emb(x)
 
@@ -210,21 +208,24 @@ class MAE(nn.Module):
 
         tokens_pred_masked = pred_tokens[batch_range, masked_indices]
 
-        patches = rearrange(patches, 'b t c p -> b (t c) p')
-        tokens_real_masked = patches[batch_range, masked_indices]
+        patches_rearranged = rearrange(patches_rearranged, 'b t c p -> b (t c) p')
+        tokens_real_masked = patches_rearranged[batch_range, masked_indices]
 
         loss = F.mse_loss(tokens_pred_masked, tokens_real_masked)
 
         losses = {'total_loss': loss}
         
         if return_preds:
-            binary_mask = torch.zeros_like(x, device=x.device, dtype=x.dtype) 
+            binary_mask = torch.zeros_like(pred_tokens, device=pred_tokens.device, dtype=pred_tokens.dtype) 
+            reconstruction_signal = torch.zeros_like(pred_tokens, device=pred_tokens.device, dtype=pred_tokens.dtype)
+            
             binary_mask[batch_range, masked_indices] = 1
 
-            reconstruction_signal = torch.zeros_like(x, device=x.device, dtype=x.dtype)
-            
             reconstruction_signal[batch_range, masked_indices] = pred_tokens[batch_range, masked_indices]
-            reconstruction_signal[batch_range, unmasked_indices] = x[batch_range, unmasked_indices]
+            reconstruction_signal[batch_range, unmasked_indices] = patches_rearranged[batch_range, unmasked_indices]
+
+            reconstruction_signal = rearrange(patches_rearranged, 'b (t c) p -> b (t p) c')
+            binary_mask = rearrange(binary_mask, 'b (t c) p -> b (t p) c')
 
             return losses, reconstruction_signal, binary_mask
 
