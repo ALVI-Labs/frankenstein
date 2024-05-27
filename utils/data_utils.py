@@ -81,12 +81,12 @@ def process_file_v2(data_file):
     voltage_list = [robust_min_max_per_block(voltage_list, block_list, 
                                              apply_clip=True,
                                              normalize_per_channel=False, 
-                                             outliers_per_channel=False)]
+                                             outliers_per_channel=True)]
 
     spikes_list = [robust_min_max_per_block(signal, block_list, 
                                             apply_clip=True,
                                             normalize_per_channel=False,
-                                            outliers_per_channel=False) for signal in spikes_list]
+                                            outliers_per_channel=True) for signal in spikes_list]
 
     normalized_signal_list = voltage_list + spikes_list
 
