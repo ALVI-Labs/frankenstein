@@ -14,11 +14,12 @@ class EncoderConfig(Serializable):
     # data params
     window_size: int = 32
     n_electrodes: int = 256
-    patch_size: int = 4
+    time_patch_size: int = 4
+    n_features: int = 1
 
     n_layers: int = 12
     dim: int = 512
-    hidden_dim: int = 1024
+    hidden_dim: int = 2048
 
     head_dim: int = 32
     n_heads: int = 16
@@ -26,7 +27,7 @@ class EncoderConfig(Serializable):
 
 @dataclass
 class MAEConfig(Serializable):
-    masking_ratio: float = 0.75
+    masking_ratio: float = 0.5
 
     # data params
     n_layers: int = 6
@@ -43,21 +44,26 @@ class Encoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        n_patches_time = int(config.window_size / config.patch_size)
-        self.block_size = int(n_patches_time * config.n_electrodes)
+        
+        self.n_time_tokens = int(config.window_size / config.time_patch_size)
+        self.block_size = int(self.n_time_tokens * config.n_electrodes) # total number of tokens
+        self.patch_dim = config.time_patch_size * config.n_features
+        
+        self.reshape_to_patches = Rearrange('b (t tp) (f c) -> b t c (tp f)', 
+                                            c=config.n_electrodes, 
+                                            tp=config.time_patch_size, 
+                                            f=config.n_features)
+        
+        self.spatial_pe = nn.Parameter(torch.randn(1, 1, config.n_electrodes, config.dim) * 0.02)
+        self.time_pe = nn.Parameter(torch.randn(1, self.n_time_tokens, 1, config.dim) * 0.02)
 
         self.transformer = nn.ModuleDict(dict(
-            emb = nn.Linear(config.patch_size, config.dim),
+            emb = nn.Linear(self.patch_dim, config.dim),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layers)]),
             ln_f = nn.LayerNorm(config.dim),
         ))
 
         self.date_embeddings = nn.Embedding(num_embeddings=25, embedding_dim=config.dim)
-        self.reshape_to_patches = Rearrange('b (t p1) c -> b t c p1', p1=config.patch_size)
-
-        self.spatial_pe = nn.Parameter(torch.randn(1, 1, config.n_electrodes, config.dim))
-        self.time_pe = nn.Parameter(torch.randn(1, n_patches_time, 1, config.dim))
-
         
         print(config)
         print("Simple Encoder: number of parameters: %.2fM" % (self.get_num_params()/1e6,))
@@ -70,7 +76,6 @@ class Encoder(nn.Module):
 
         patches = self.reshape_to_patches(x)
         patches = self.transformer.emb(patches)
-
 
         patches = patches + self.time_pe + self.spatial_pe
         patches = rearrange(patches, 'b t c p -> b (t c) p')
@@ -121,6 +126,7 @@ class MAE(nn.Module):
     def __init__(self, encoder_config, mae_config):
         super().__init__()
         self.encoder_config = encoder_config
+        self.mae_config = mae_config
         
         self.encoder = Encoder(encoder_config)
         self.dim = mae_config.dim
@@ -131,9 +137,11 @@ class MAE(nn.Module):
             h = nn.ModuleList([Block(mae_config) for _ in range(mae_config.n_layers)]),
         ))
 
-        self.mask_token = nn.Parameter(torch.randn(mae_config.dim))
-        self.decoder_pos_emb = nn.Parameter(torch.randn(1, self.encoder.block_size + 1, mae_config.dim))
-        self.proj_to_signals = nn.Linear(mae_config.dim, encoder_config.patch_size)
+        self.mask_token = nn.Parameter(torch.randn(mae_config.dim) * 0.02)
+        self.decoder_pos_emb = nn.Parameter(torch.randn(1, self.encoder.block_size + 1, mae_config.dim) * 0.02)
+        self.proj_to_signals = nn.Linear(mae_config.dim, self.encoder.patch_dim)
+        
+        self.apply(self._init_all_weights)
         print(mae_config)
         print("MAE: number of parameters: %.2fM" % (self.get_num_params()/1e6))
 
@@ -156,13 +164,13 @@ class MAE(nn.Module):
 
     def forward(self, x, targets=None, date_info=None, return_preds=False):
         """
-        Inputs: x with shape -> B, T, C
+        Inputs: x with shape -> B, T, Channels*Feature
         """
         b, ts, c = x.shape
         batch_range = torch.arange(b, device=x.device)[:, None]
         
         # Encoder
-        patches_rearranged = self.encoder.reshape_to_patches(x) # b t c p
+        patches_rearranged = self.encoder.reshape_to_patches(x) # b t c patch_dim
         
         embds = self.encoder.transformer.emb(patches_rearranged)
         embds = embds + self.encoder.time_pe + self.encoder.spatial_pe
@@ -224,8 +232,15 @@ class MAE(nn.Module):
             reconstruction_signal[batch_range, masked_indices] = pred_tokens[batch_range, masked_indices]
             reconstruction_signal[batch_range, unmasked_indices] = patches_rearranged[batch_range, unmasked_indices]
 
-            reconstruction_signal = rearrange(patches_rearranged, 'b (t c) p -> b (t p) c')
-            binary_mask = rearrange(binary_mask, 'b (t c) p -> b (t p) c')
+            reconstruction_signal = rearrange(patches_rearranged, 'b (t c) (tp f) -> b (t tp) (f c)', 
+                                              f=self.encoder_config.n_features, 
+                                              tp=self.encoder_config.time_patch_size,
+                                              c=self.encoder_config.n_electrodes)
+            binary_mask = rearrange(binary_mask, 'b (t c) (tp f) -> b (t tp) (f c)',
+                                    f=self.encoder_config.n_features, 
+                                    tp=self.encoder_config.time_patch_size,
+                                    c=self.encoder_config.n_electrodes
+                                    )
 
             return losses, reconstruction_signal, binary_mask
 
@@ -238,5 +253,13 @@ class MAE(nn.Module):
     @property
     def device(self) -> torch.dtype:
         return next(self.parameters()).dtype
+    
+    def _init_all_weights(self, module):
+        if isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
 
