@@ -259,11 +259,12 @@ class Mirasol(nn.Module):
         is_padded = self.adjust_pad_mask(is_padded, scale_factor=scale_factor)
 
         indices_out, embeds = self.vq_model.get_indices(x, return_embeddings=True)
-        indices = torch.clone(indices_out)
         
+        # indices = torch.clone(indices_out)
         # tokens = self.emb(indices)
+
         x = self.proj_emb(embeds)
-                
+        
         b, t, c, d = x.size()
         x = rearrange(x, 'b t c d -> (b t) c d', b=b, t=t, 
                            c=self.config.n_electrodes, d=self.config.dim)
