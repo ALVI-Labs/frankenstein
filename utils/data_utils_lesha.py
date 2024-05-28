@@ -386,7 +386,8 @@ class WhisperAugmentDataset(Dataset):
                  sentence_list: List[str],
                  preprocess_config: PreprocessConfig, 
                  augment_config: AugmentConfig, 
-                 is_eval=False):
+                 is_eval=False,
+                 date_list=None):
         
         self.voltage_list = voltage_list
         self.spike_list = spike_list
@@ -394,7 +395,7 @@ class WhisperAugmentDataset(Dataset):
         self.preprocess_config = preprocess_config
         self.augment_config = augment_config
         self.is_eval = is_eval
-        
+        self.date_list = date_list
         self.max_samples = int(preprocess_config.max_duration * preprocess_config.fs_whisper)
 
         self.process_data(self.preprocess_config)
@@ -471,6 +472,8 @@ class WhisperAugmentDataset(Dataset):
 
         # Process (tokenize) the sentence
         sentence = self.sentence_list[idx]
+        if self.date_list is not None:
+            sentence =  self.date_list[idx] + sentence   
         labels = self.preprocess_config.sentence_tokenizer(sentence, return_tensors="pt").input_ids.squeeze()
 
         return {
@@ -606,8 +609,9 @@ class DataCollatorSpeechSeq2SeqWithPadding:
     def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         # first treat the BRAIN INPUTS (already preprocessed)
         input_features = [{"input_features": feature["input_features"]} for feature in features]
-        batch = self.feature_extractor.pad(input_features, return_tensors="pt")
-        # batch = input_features
+        # [pch]
+        # batch = self.feature_extractor.pad(input_features, return_tensors="pt")
+        batch = input_features
 
         # get the tokenized label sequences
         label_features = [{"input_ids": feature["labels"]} for feature in features]
