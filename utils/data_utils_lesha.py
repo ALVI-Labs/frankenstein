@@ -10,9 +10,11 @@ import string
 import time
 from tqdm import tqdm
 from pathlib import Path
+import joblib
+import json
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Any, List, Tuple, Union, Dict
 
 from peft import LoraConfig
@@ -135,6 +137,30 @@ def count_parameters(model):
 
 
 @dataclass
+class RegularizeConfig:
+    apply_spec_augment: bool = False
+    mask_feature_prob: float = 0.0
+    mask_time_prob: float = 0.05
+    decoder_layerdrop: float = 0.0
+    encoder_layerdrop: float = 0.0
+    dropout: float = 0.1
+    activation_dropout: float = 0.0
+
+    def to_dict(self):
+        return asdict(self)
+
+    def to_json_file(self, filepath: Path):
+        with open(filepath, 'w') as f:
+            json.dump(self.to_dict(), f, indent=4)
+
+    @classmethod
+    def from_json_file(cls, filepath: Path):
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+        return cls(**data)
+
+
+@dataclass
 class ModelAdaptationConfig:
     
     # This set of parameters defines the input convolutional layers configuration (model.model.encoder.conv1 / 2)
@@ -155,6 +181,38 @@ class ModelAdaptationConfig:
     low_rank_adaptation_modules: Any = ("decoder")
     low_rank_adaptation_targets: Any = ("q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2")
     lora_config: Any = None
+
+    def to_dict(self):
+        config_dict = asdict(self)
+        config_dict["lora_config"] = self.lora_config.to_dict()
+        return config_dict
+
+    def to_json_file(self, filepath: Path):
+        config_dict = self.to_dict()
+        lora_config_path = filepath.parent / "lora_config.json"
+
+        # Save the main config excluding lora_config
+        config_dict.pop("lora_config")
+        with open(filepath, 'w') as f:
+            json.dump(config_dict, f, indent=4)
+
+        # Save the lora_config separately
+        with open(lora_config_path, 'w') as f:
+            json.dump(self.lora_config.to_dict(), f, indent=4)
+
+    @classmethod
+    def from_json_file(cls, filepath: Path):
+        lora_config_path = filepath.parent / "lora_config.json"
+        
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+
+        lora_dict = LoraConfig.from_json_file(lora_config_path)
+        lora_config = LoraConfig(**lora_dict)
+        data["lora_config"] = lora_config
+        
+        return cls(**data)
+        
 
 
 def configure_input_layers(model, config: ModelAdaptationConfig):
@@ -358,6 +416,48 @@ class PreprocessConfig:
     fs_whisper: int = 100
     max_duration: float = 30.0  # Maximal signal duration in seconds
     resample_type: str = "fft_resample" # or "interpolate"
+    
+
+    def to_dict(self):
+        config_dict = asdict(self)
+        config_dict["voltage_scaler"] = None
+        config_dict["spike_scaler"] = None
+        config_dict["sentence_tokenizer"] = None
+        return config_dict
+
+    def to_json_file(self, filepath: Path):
+        config_dict = self.to_dict()
+        voltage_scaler_path = filepath.parent / "voltage_scaler.pkl"
+        spike_scaler_path = filepath.parent / "spike_scaler.pkl"
+        sentence_tokenizer_path = filepath.parent / "sentence_tokenizer.pkl"
+
+        # Save the main config excluding scalers and tokenizer
+        with open(filepath, 'w') as f:
+            json.dump(config_dict, f, indent=4)
+
+        # Save the scalers and tokenizer separately if they exist
+        if self.voltage_scaler:
+            joblib.dump(self.voltage_scaler, voltage_scaler_path)
+        if self.spike_scaler:
+            joblib.dump(self.spike_scaler, spike_scaler_path)
+        if self.sentence_tokenizer:
+            joblib.dump(self.sentence_tokenizer, sentence_tokenizer_path)
+
+    @classmethod
+    def from_json_file(cls, filepath: Path):
+        voltage_scaler_path = filepath.parent / "voltage_scaler.pkl"
+        spike_scaler_path = filepath.parent / "spike_scaler.pkl"
+        sentence_tokenizer_path = filepath.parent / "sentence_tokenizer.pkl"
+        
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+
+        # Load the scalers and tokenizer separately if they exist
+        data["voltage_scaler"] = joblib.load(voltage_scaler_path) if voltage_scaler_path.exists() else None
+        data["spike_scaler"] = joblib.load(spike_scaler_path) if spike_scaler_path.exists() else None
+        data["sentence_tokenizer"] = joblib.load(sentence_tokenizer_path) if sentence_tokenizer_path.exists() else None
+        
+        return cls(**data)
 
 
 @dataclass
@@ -377,6 +477,19 @@ class AugmentConfig:
     time_mask_probability: float = 0.3
     time_mask_fraction_limits: Tuple[float, float] = (0.01, 0.05)  # Fraction of time to mask
     random_signal_shift_probability: float = 0.5
+
+    def to_dict(self):
+        return asdict(self)
+
+    def to_json_file(self, filepath: Path):
+        with open(filepath, 'w') as f:
+            json.dump(self.to_dict(), f, indent=4)
+
+    @classmethod
+    def from_json_file(cls, filepath: Path):
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+        return cls(**data)
 
 
 class WhisperAugmentDataset(Dataset):
