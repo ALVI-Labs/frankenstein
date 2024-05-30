@@ -44,7 +44,7 @@ DATE_TO_INDEX = {'t12.2022.04.28': 0,
 ### ------------- ###
 
 
-def process_all_files(path, process_file):
+def process_all_files(path, process_file=process_file_last):
     data = {'brain_list':[], 'sentence_list':[], 'date_list':[]}
     data_files = sorted(path.glob('*.mat'))
     
@@ -58,6 +58,83 @@ def process_all_files(path, process_file):
         data['date_list'].extend(dates)
     gc.collect()
     return data
+
+
+def smoothed_min_max_per_block(signal_list, 
+                               block_list,
+                               sigma=1,
+                               normalize_per_channel=True):
+ 
+    signal_list = np.array(signal_list, dtype='object')
+    block_list = np.array(block_list)
+    
+    unique_blocks = np.unique(block_list)
+    signal_processed = np.empty(len(block_list), dtype=object)
+
+    for block in unique_blocks:
+        trial_mask = block_list == block
+
+        # concat all data per block, smooth and minmax scale
+        x, shapes = pack(signal_list[trial_mask], '* c')
+
+        x = gaussian_filter1d(x, sigma=sigma, axis=0)
+        x = normalize_data(x, normalize_per_channel=normalize_per_channel)
+
+        # unpack and save
+        signal_processed[trial_mask] = unpack(x, shapes, '* c')
+    
+    return signal_processed
+
+def process_file_last(data_file):
+    """
+    Process files and get annotation.
+
+    Process all features and return concatenated features actoss channel space.
+    
+    For voltage: clip outliezr and then min max per data sample
+    for spikes: no clipping, just minmax for data_sample.
+    """
+    data = scipy.io.loadmat(data_file)
+    date = data_file.stem
+
+    block_list   = data['blockIdx'][:, 0]
+    sentence_list = data['sentenceText']
+
+    voltage_list = [data['spikePow'][0]]
+    spikes_list = [data['tx1'][0], data['tx2'][0], data['tx3'][0]]
+    
+    
+    voltage_list = [smoothed_min_max_per_block(signals, 
+                                               block_list,
+                                               sigma=1,
+                                               normalize_per_channel=True) for signals in voltage_list]
+
+    spikes_list = [smoothed_min_max_per_block(signals, 
+                                              block_list, 
+                                              sigma=0.1,
+                                              normalize_per_channel=True) for signals in spikes_list]
+
+    normalized_signal_list = voltage_list + spikes_list
+
+    # concatenate all features channels dim and save date information
+    n_trials = len(block_list)    
+    date_list = [date] * n_trials
+    brain_list = [None] * n_trials
+    
+    for idx in range(n_trials):
+        brain_list[idx] = np.concatenate([signal[idx] for signal in normalized_signal_list], axis=1)
+    
+    sentence_list = process_text(sentence_list)
+    
+    # delete unnecessary files
+    del data, normalized_signal_list
+    
+    return brain_list, sentence_list, date_list
+
+
+
+
+# ------------------------------------------#
 
 
 def process_file_v2(data_file):
