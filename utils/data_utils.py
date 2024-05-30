@@ -4,6 +4,7 @@ import string
 import scipy
 import scipy.io
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from scipy.ndimage import gaussian_filter1d
 
 from collections import defaultdict
 from torch.utils.data import Dataset
@@ -44,12 +45,12 @@ DATE_TO_INDEX = {'t12.2022.04.28': 0,
 ### ------------- ###
 
 
-def process_all_files(path, process_file=process_file_last):
+def process_all_files(path, process_file_func):
     data = {'brain_list':[], 'sentence_list':[], 'date_list':[]}
     data_files = sorted(path.glob('*.mat'))
     
     for data_file in tqdm(data_files, desc="Processing files", unit="file"):
-        brains, sentences, dates = process_file(data_file)    
+        brains, sentences, dates = process_file_func(data_file)    
         # reducing memory consumption
         brains = [data.astype(np.float16) for data in brains]
         
@@ -58,7 +59,6 @@ def process_all_files(path, process_file=process_file_last):
         data['date_list'].extend(dates)
     gc.collect()
     return data
-
 
 def smoothed_min_max_per_block(signal_list, 
                                block_list,
@@ -133,6 +133,17 @@ def process_file_last(data_file):
 
 
 
+def normalize_data(x, normalize_per_channel):
+    """
+    x - Time, Channels
+    """
+    if normalize_per_channel:
+        x_min, x_max = x.min(0), x.max(0)
+    else:
+        x_min, x_max = x.min(), x.max()
+    interval = np.where((x_max - x_min) == 0, 1, x_max - x_min)
+    x  = (x - x_min) / interval
+    return x
 
 # ------------------------------------------#
 
@@ -236,17 +247,6 @@ def get_low_upper_values(x, outliers_per_channel=True):
     
     return low_lim, up_lim
 
-def normalize_data(x, normalize_per_channel):
-    """
-    x - Time, Channels
-    """
-    if normalize_per_channel:
-        x_min, x_max = x.min(0), x.max(0)
-    else:
-        x_min, x_max = x.min(), x.max()
-    interval = np.where((x_max - x_min) == 0, 1, x_max - x_min)
-    x  = (x - x_min) / interval
-    return x
 
 
 
@@ -468,7 +468,7 @@ class BrainDataset(Dataset):
         if process_file_function is None:
             process_file_function = process_file
 
-        data = process_all_files(path, process_file=process_file_function)
+        data = process_all_files(path, process_file_func=process_file_function)
             
         self.inputs = data['brain_list']
         self.targets = data['sentence_list']

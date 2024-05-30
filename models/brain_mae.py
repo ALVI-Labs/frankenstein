@@ -12,7 +12,7 @@ from dataclasses import dataclass
 @dataclass
 class EncoderConfig(Serializable):
     # data params
-    window_size: int = 32
+    window_size: int = 16
     n_electrodes: int = 256
     time_patch_size: int = 4
     n_features: int = 4
@@ -234,7 +234,7 @@ class MAE(nn.Module):
             reconstruction_signal[batch_range, masked_indices] = pred_tokens[batch_range, masked_indices]
             reconstruction_signal[batch_range, unmasked_indices] = patches_rearranged[batch_range, unmasked_indices]
 
-            reconstruction_signal = rearrange(patches_rearranged, 'b (t c) (tp f) -> b (t tp) (f c)', 
+            reconstruction_signal = rearrange(reconstruction_signal, 'b (t c) (tp f) -> b (t tp) (f c)', 
                                               f=self.encoder_config.n_features, 
                                               tp=self.encoder_config.time_patch_size,
                                               c=self.encoder_config.n_electrodes)

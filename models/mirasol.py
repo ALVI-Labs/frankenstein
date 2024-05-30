@@ -16,9 +16,9 @@ class MirasolConfig(Serializable):
     # data params
     window_size: int = 512
     n_electrodes: int = 256
-    mask_ratio: float = 0.0
+    mask_ratio: float = 0.75
 
-    n_registers: int = 4
+    n_registers: int = 6
 
     n_layers: int = 12
     dim: int = 512
@@ -258,11 +258,8 @@ class Mirasol(nn.Module):
         is_padded = (x==0).all(dim=-1) # B, T
         is_padded = self.adjust_pad_mask(is_padded, scale_factor=scale_factor)
 
-        indices_out, embeds = self.vq_model.get_indices(x, return_embeddings=True)
+        indices_out, embeds = self.vq_model.get_indices(x, return_embeddings=True) # maybe scale there.
         
-        # indices = torch.clone(indices_out)
-        # tokens = self.emb(indices)
-
         x = self.proj_emb(embeds)
         
         b, t, c, d = x.size()
@@ -277,7 +274,7 @@ class Mirasol(nn.Module):
         latents = self.causal(self.drop_combiner_out(x)) # b (t r) d -> b (t r) d
 
         latent_loss = 0 
-        if self.w_latent_loss:
+        if self.w_latent_loss > 0:
             future_hat = self.proj_to_next_token(latents[:, :-self.config.n_registers])
             future = x[:, self.config.n_registers:]
             is_padded_cut = is_padded[:, self.config.n_registers:]
@@ -385,6 +382,12 @@ class Franky(nn.Module):
         x: B, T, C
         """
         losses, latents = self.brain_model(x) # b, N, d
+
+        # fast track for loss calculation.
+        if self.w_txt_loss == 0:
+            return losses, latents
+
+
         features = self.projector(latents)
 
         if self.add_temporal_embeddings:
